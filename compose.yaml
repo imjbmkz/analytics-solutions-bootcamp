@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres_db
+    restart: always
+    shm_size: 128mb
+    environment:
+      POSTGRES_DB: asb_oltp
+      POSTGRES_USER: db_user
+      POSTGRES_PASSWORD: db_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./00_setup:/docker-entrypoint-initdb.d # Mounts your local script directory
+
+volumes:
+  postgres_data:

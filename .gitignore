@@ -1,0 +1,6 @@
+# Virtual environment and environment files
+env_lab*/
+.env
+
+# DuckDB files
+*.duckdb
