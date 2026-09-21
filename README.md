@@ -384,7 +384,51 @@ sessionInfo()
 
 ---
 
-# 7. Google Colab
+# 7. DBeaver Community
+
+DBeaver Community is a free database management tool that can connect to PostgreSQL, DuckDB, and other databases through a graphical interface.
+
+## 1. System requirements
+
+**Windows:** Windows 10/11, 64-bit; at least 1 GB available storage; administrator access for installation.
+
+**macOS:** A supported version of macOS; Apple silicon or Intel processor; at least 1 GB available storage.
+
+Java is included with the standard DBeaver installer, so a separate Java installation is normally unnecessary.
+
+## 2. Install instructions
+
+### Windows
+
+1. Visit [DBeaver Community](https://dbeaver.io/download/).
+
+2. Download the Windows installer.
+
+3. Run the installer and keep the recommended options.
+
+4. Open DBeaver after installation.
+
+### macOS
+
+1. Visit [DBeaver Community](https://dbeaver.io/download/).
+
+2. Download the installer that matches your Mac's processor.
+
+3. Open the `.dmg` file and drag DBeaver into **Applications**.
+
+4. Open DBeaver.
+
+## 3. References
+
+- [Download DBeaver Community](https://dbeaver.io/download/)
+
+- [DBeaver installation guide](https://dbeaver.com/docs/dbeaver/Installation/)
+
+- [PostgreSQL connection guide](https://dbeaver.com/docs/dbeaver/PostgreSQL/)
+
+---
+
+# 8. Google Colab
 
 Google Colab is an online notebook environment for Python and R. It is an alternative when local installation is not possible.
 
