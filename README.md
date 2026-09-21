@@ -98,26 +98,7 @@ docker rm bootcamp-postgres
 
 The sample password is for local practice only.
 
-Create `compose.yaml`:
-
-```yaml
-services:
-  database:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: bootcamp
-      POSTGRES_PASSWORD: bootcamp
-      POSTGRES_DB: analytics
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:
-```
-
-Run Compose from the same folder:
+Use existing `compose.yaml` to run Compose from the same folder:
 
 ```bash
 docker compose up -d     # Start
@@ -171,7 +152,7 @@ For bootcamp activities, GitHub authentication through the browser or VS Code is
 
 ```bash
 git --version
-git clone https://github.com/USERNAME/REPOSITORY.git
+git clone https://github.com/imjbmkz/analytics-solutions-bootcamp.git
 git status
 git add .
 git commit -m "Add project files"
