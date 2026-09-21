@@ -2,7 +2,7 @@
 
 ## Tools Setup Guide
 
-Install the tools in the order presented. Google Colab may be used for most Python and R activities when local installation is not possible, but it does not replace Docker or every local development task.
+Install the tools in the order presented. You may choose to install Docker to run Postgre, DuckDB, or configure your own database. Google Colab may be used for most Python and R activities when local installation is not possible.
 
 ---
 
