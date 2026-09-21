@@ -1,0 +1,749 @@
+---
+title: "Ames Housing: Linear Regression Lab"
+subtitle: "Using property characteristics to support residential valuation"
+author: "Analytics Solutions Bootcamp"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
+
+required_packages <- c(
+  "modeldata", "tidyverse", "janitor", "rsample",
+  "broom", "yardstick", "scales"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Install the missing packages first: ",
+    paste(missing_packages, collapse = ", ")
+  )
+}
+
+library(modeldata)
+library(tidyverse)
+library(janitor)
+library(rsample)
+library(broom)
+library(yardstick)
+library(scales)
+
+set.seed(123)
+```
+
+# Business scenario
+
+A residential property company needs a consistent starting point for estimating
+sale prices in Ames, Iowa. Agents currently rely heavily on comparable listings
+and individual judgment. Management wants to understand how much price variation
+can be explained by observable property characteristics and how large a typical
+valuation error may be.
+
+The model will support—not replace—professional appraisal. Historical sale price
+is the numerical response variable, so this is a **regression problem**.
+
+## Operational questions
+
+This lab answers the following questions:
+
+1. What is the typical sale price, and how widely do prices vary?
+2. How much does sale price generally change as above-ground living area grows?
+3. Is living area alone sufficient for initial valuation?
+4. Does including age, basement area, garage capacity, bathrooms, and
+   neighborhood materially improve estimates?
+5. What is the typical dollar error for each model?
+6. Which model better supports preliminary pricing and appraisal triage?
+7. Which properties sell substantially above or below their estimated values
+   and may require manual investigation?
+8. What limitations should management consider before operational use?
+
+> **Important:** Regression coefficients describe historical associations while
+> holding included predictors constant. They do not establish that changing a
+> property feature will cause its price to change by the coefficient amount.
+
+# 1. Load and understand the data
+
+```{r load-data}
+data(ames, package = "modeldata")
+
+ames_data <- ames |>
+  clean_names()
+
+glimpse(ames_data)
+```
+
+```{r data-quality}
+tibble(
+  properties = nrow(ames_data),
+  variables = ncol(ames_data),
+  duplicate_rows = sum(duplicated(ames_data)),
+  missing_values = sum(is.na(ames_data))
+)
+```
+
+For this introductory lab, we use a small, interpretable subset of variables.
+This keeps the multiple-regression model aligned with the operational questions.
+
+```{r select-variables}
+housing_data <- ames_data |>
+  transmute(
+    sale_price,
+    gr_liv_area,
+    year_built,
+    total_bsmt_sf,
+    garage_cars,
+    full_bath,
+    neighborhood
+  ) |>
+  drop_na()
+
+glimpse(housing_data)
+```
+
+| Variable | Operational meaning |
+|---|---|
+| `sale_price` | Historical property sale price in US dollars |
+| `gr_liv_area` | Above-ground living area in square feet |
+| `year_built` | Original construction year |
+| `total_bsmt_sf` | Total basement area in square feet |
+| `garage_cars` | Approximate garage capacity in cars |
+| `full_bath` | Number of full bathrooms above ground |
+| `neighborhood` | Physical neighborhood classification |
+
+# 2. Explore the housing market
+
+## Sale-price profile
+
+```{r price-summary}
+housing_data |>
+  summarise(
+    properties = n(),
+    mean_price = mean(sale_price),
+    median_price = median(sale_price),
+    minimum_price = min(sale_price),
+    maximum_price = max(sale_price),
+    standard_deviation = sd(sale_price)
+  )
+```
+
+```{r price-distribution}
+price_mean <- mean(housing_data$sale_price)
+price_median <- median(housing_data$sale_price)
+
+ggplot(housing_data, aes(sale_price)) +
+  geom_histogram(bins = 40, fill = "#4C78A8", color = "white") +
+  geom_vline(
+    xintercept = price_mean,
+    color = "#E45756",
+    linewidth = 1,
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = price_median,
+    color = "#54A24B",
+    linewidth = 1,
+    linetype = "dotted"
+  ) +
+  scale_x_continuous(labels = dollar) +
+  labs(
+    title = "Distribution of residential sale prices",
+    subtitle = "Dashed red: mean; dotted green: median",
+    x = "Sale price",
+    y = "Number of properties"
+  ) +
+  theme_minimal()
+```
+
+If the mean is much higher than the median, unusually expensive properties may
+be pulling the average upward. That affects both operational reporting and
+model errors.
+
+## Price and living area
+
+```{r price-area-relationship}
+ggplot(housing_data, aes(gr_liv_area, sale_price)) +
+  geom_point(alpha = 0.35, color = "#4C78A8") +
+  geom_smooth(method = "lm", se = TRUE, color = "#E45756") +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Sale price and above-ground living area",
+    subtitle = "The fitted line summarizes the average linear relationship",
+    x = "Above-ground living area (sq ft)",
+    y = "Sale price"
+  ) +
+  theme_minimal()
+```
+
+```{r area-price-correlation}
+housing_data |>
+  summarise(
+    correlation = cor(gr_liv_area, sale_price),
+    covariance = cov(gr_liv_area, sale_price)
+  )
+```
+
+## Price differences across neighborhoods
+
+```{r neighborhood-summary}
+neighborhood_summary <- housing_data |>
+  group_by(neighborhood) |>
+  summarise(
+    sales = n(),
+    median_price = median(sale_price),
+    mean_price = mean(sale_price),
+    .groups = "drop"
+  ) |>
+  arrange(desc(median_price))
+
+neighborhood_summary
+```
+
+```{r neighborhood-chart, fig.height=8}
+ggplot(
+  housing_data,
+  aes(
+    x = reorder(neighborhood, sale_price, FUN = median),
+    y = sale_price
+  )
+) +
+  geom_boxplot(fill = "#72B7B2", outlier.alpha = 0.35) +
+  coord_flip() +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Sale-price distributions across neighborhoods",
+    x = "Neighborhood",
+    y = "Sale price"
+  ) +
+  theme_minimal()
+```
+
+### Operational discussion
+
+- Would a company-wide average be a useful estimate for every property?
+- Which market segments contain the highest-value properties?
+- Do properties with similar living areas always sell for similar prices?
+- Which omitted features might explain the remaining variation?
+
+# 3. Prepare training and test data
+
+We split the data before fitting either model. Stratification by `sale_price`
+helps maintain a similar price distribution in both samples.
+
+```{r split-data}
+ames_split <- initial_split(
+  housing_data,
+  prop = 0.80,
+  strata = sale_price
+)
+
+train_data <- training(ames_split)
+test_data <- testing(ames_split)
+
+bind_rows(
+  train_data |>
+    summarise(
+      dataset = "Training",
+      properties = n(),
+      mean_price = mean(sale_price),
+      median_price = median(sale_price)
+    ),
+  test_data |>
+    summarise(
+      dataset = "Test",
+      properties = n(),
+      mean_price = mean(sale_price),
+      median_price = median(sale_price)
+    )
+)
+```
+
+# 4. Establish a baseline estimate
+
+Before regression, suppose the company estimates every test property using the
+mean training sale price. This gives a basic benchmark for evaluating whether
+property characteristics add useful information.
+
+```{r baseline}
+training_mean_price <- mean(train_data$sale_price)
+
+baseline_predictions <- test_data |>
+  transmute(
+    truth = sale_price,
+    .pred = training_mean_price
+  )
+
+baseline_predictions |>
+  summarise(
+    model = "Training-mean baseline",
+    mae = mae_vec(truth, .pred),
+    mse = mse_vec(truth, .pred),
+    rmse = rmse_vec(truth, .pred),
+    rsq = rsq_vec(truth, .pred)
+  )
+```
+
+# 5. Simple linear regression
+
+The first model estimates sale price from above-ground living area alone:
+
+\[
+\widehat{SalePrice} = \beta_0 + \beta_1(GrLivArea)
+\]
+
+The fitted coefficients minimize the sum of squared residuals, where a residual
+is the difference between an observed price and its fitted price.
+
+```{r simple-model}
+simple_model <- lm(
+  sale_price ~ gr_liv_area,
+  data = train_data
+)
+
+summary(simple_model)
+```
+
+## Interpret the coefficients
+
+```{r simple-coefficients}
+tidy(simple_model, conf.int = TRUE)
+```
+
+Interpretation guide:
+
+- **Intercept:** estimated price when living area is zero. This is needed to
+  position the line mathematically, but it is not operationally meaningful
+  because a zero-square-foot home is outside the useful data range.
+- **Living-area coefficient:** expected difference in sale price associated
+  with one additional square foot, on average.
+- Multiplying the coefficient by 100 gives a more practical estimate for an
+  additional 100 square feet.
+
+```{r simple-business-interpretation}
+area_coefficient <- coef(simple_model)[["gr_liv_area"]]
+
+tibble(
+  additional_area_sq_ft = c(1, 100, 500),
+  estimated_price_difference = area_coefficient * additional_area_sq_ft
+)
+```
+
+This is an association, not a guaranteed return from constructing additional
+space. Quality, location, layout, and other factors may differ.
+
+## Generate test predictions
+
+```{r simple-predictions}
+simple_predictions <- test_data |>
+  transmute(
+    truth = sale_price,
+    .pred = predict(simple_model, newdata = test_data),
+    residual = truth - .pred
+  )
+```
+
+# 6. Multiple linear regression
+
+Living area does not capture the full valuation context. We extend the model:
+
+\[
+\widehat{SalePrice} = \beta_0 + \beta_1X_1 + \beta_2X_2 + \cdots + \beta_mX_m
+\]
+
+The multiple model estimates the association of each predictor with price while
+holding the other included predictors constant.
+
+```{r multiple-model}
+multiple_model <- lm(
+  sale_price ~ gr_liv_area + year_built + total_bsmt_sf +
+    garage_cars + full_bath + neighborhood,
+  data = train_data
+)
+
+summary(multiple_model)
+```
+
+## Interpret selected coefficients
+
+```{r multiple-coefficients}
+multiple_coefficients <- tidy(
+  multiple_model,
+  conf.int = TRUE
+) |>
+  arrange(p.value)
+
+multiple_coefficients
+```
+
+Interpretation reminders:
+
+- A numerical coefficient represents an expected price difference for a
+  one-unit increase, holding the other included variables constant.
+- A neighborhood coefficient is interpreted relative to the model's reference
+  neighborhood.
+- A small p-value indicates evidence of an association under the model's
+  assumptions; it does not measure business importance or causality.
+- Confidence intervals communicate uncertainty around each estimated
+  coefficient.
+
+```{r reference-neighborhood}
+tibble(
+  reference_neighborhood = levels(train_data$neighborhood)[1]
+)
+```
+
+## Compare training model summaries
+
+```{r model-fit-summary}
+bind_rows(
+  glance(simple_model) |>
+    transmute(
+      model = "Simple linear regression",
+      r_squared = r.squared,
+      adjusted_r_squared = adj.r.squared,
+      residual_standard_error = sigma
+    ),
+  glance(multiple_model) |>
+    transmute(
+      model = "Multiple linear regression",
+      r_squared = r.squared,
+      adjusted_r_squared = adj.r.squared,
+      residual_standard_error = sigma
+    )
+)
+```
+
+Adjusted \(R^2\) accounts for the number of predictors and is more useful than
+training \(R^2\) alone when comparing models of different complexity. Final
+model assessment should still use the untouched test data.
+
+## Generate test predictions
+
+```{r multiple-predictions}
+multiple_predictions <- test_data |>
+  transmute(
+    truth = sale_price,
+    .pred = predict(multiple_model, newdata = test_data),
+    residual = truth - .pred
+  )
+```
+
+# 7. Evaluate operational accuracy
+
+The following metrics answer different operational questions:
+
+- **MAE:** the typical absolute dollar difference between actual and estimated
+  prices.
+- **MSE:** average squared error; heavily penalizes large mistakes.
+- **RMSE:** also penalizes large mistakes but remains in dollars.
+- **MAPE:** average absolute percentage error, useful for relative accuracy.
+- **R-squared:** share of test-set price variation captured by the estimates.
+
+```{r evaluation-function}
+regression_metrics <- function(predictions, model_name) {
+  predictions |>
+    summarise(
+      model = model_name,
+      mae = mae_vec(truth, .pred),
+      mse = mse_vec(truth, .pred),
+      rmse = rmse_vec(truth, .pred),
+      mape = mean(abs((truth - .pred) / truth)) * 100,
+      rsq = rsq_vec(truth, .pred)
+    )
+}
+
+model_metrics <- bind_rows(
+  regression_metrics(
+    baseline_predictions,
+    "Training-mean baseline"
+  ),
+  regression_metrics(
+    simple_predictions,
+    "Simple linear regression"
+  ),
+  regression_metrics(
+    multiple_predictions,
+    "Multiple linear regression"
+  )
+)
+
+model_metrics |>
+  mutate(
+    across(c(mae, mse, rmse), ~ dollar(.x, accuracy = 1)),
+    mape = percent(mape / 100, accuracy = 0.1),
+    rsq = round(rsq, 3)
+  )
+```
+
+## Quantify the improvement
+
+```{r improvement-summary}
+simple_mae <- model_metrics |>
+  filter(model == "Simple linear regression") |>
+  pull(mae)
+
+multiple_mae <- model_metrics |>
+  filter(model == "Multiple linear regression") |>
+  pull(mae)
+
+simple_rmse <- model_metrics |>
+  filter(model == "Simple linear regression") |>
+  pull(rmse)
+
+multiple_rmse <- model_metrics |>
+  filter(model == "Multiple linear regression") |>
+  pull(rmse)
+
+tibble(
+  metric = c("MAE", "RMSE"),
+  simple_model = c(simple_mae, simple_rmse),
+  multiple_model = c(multiple_mae, multiple_rmse),
+  reduction = c(
+    1 - multiple_mae / simple_mae,
+    1 - multiple_rmse / simple_rmse
+  )
+) |>
+  mutate(
+    across(c(simple_model, multiple_model), ~ dollar(.x, accuracy = 1)),
+    reduction = percent(reduction, accuracy = 0.1)
+  )
+```
+
+## Actual versus estimated prices
+
+```{r actual-vs-predicted}
+bind_rows(
+  simple_predictions |>
+    mutate(model = "Simple linear regression"),
+  multiple_predictions |>
+    mutate(model = "Multiple linear regression")
+) |>
+  ggplot(aes(truth, .pred)) +
+  geom_point(alpha = 0.45, color = "#4C78A8") +
+  geom_abline(slope = 1, intercept = 0, color = "#E45756", linetype = "dashed") +
+  facet_wrap(~ model) +
+  coord_equal() +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Actual versus estimated sale prices",
+    subtitle = "Points near the dashed line have smaller valuation errors",
+    x = "Actual sale price",
+    y = "Estimated sale price"
+  ) +
+  theme_minimal()
+```
+
+# 8. Diagnose the multiple regression model
+
+## Residuals versus fitted values
+
+```{r residual-plot}
+augment(multiple_model) |>
+  ggplot(aes(.fitted, .resid)) +
+  geom_point(alpha = 0.35, color = "#4C78A8") +
+  geom_hline(yintercept = 0, color = "#E45756", linetype = "dashed") +
+  geom_smooth(se = FALSE, color = "#54A24B") +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Residuals versus fitted prices",
+    subtitle = "Systematic patterns suggest that linear-model assumptions may be incomplete",
+    x = "Fitted sale price",
+    y = "Residual: actual minus fitted price"
+  ) +
+  theme_minimal()
+```
+
+Operational interpretation:
+
+- Residuals above zero represent underestimation.
+- Residuals below zero represent overestimation.
+- A widening spread at higher fitted prices suggests less consistent dollar
+  accuracy for expensive properties.
+- Curved patterns suggest nonlinear relationships or missing terms.
+
+## Normal Q-Q plot
+
+```{r qq-plot}
+augment(multiple_model) |>
+  ggplot(aes(sample = .std.resid)) +
+  stat_qq(alpha = 0.4, color = "#4C78A8") +
+  stat_qq_line(color = "#E45756") +
+  labs(
+    title = "Normal Q-Q plot of standardized residuals",
+    x = "Theoretical quantiles",
+    y = "Standardized residuals"
+  ) +
+  theme_minimal()
+```
+
+## Influential training observations
+
+```{r influential-observations}
+influence_summary <- augment(multiple_model) |>
+  mutate(training_row = row_number()) |>
+  arrange(desc(.cooksd)) |>
+  select(
+    training_row,
+    sale_price,
+    .fitted,
+    .resid,
+    .std.resid,
+    .hat,
+    .cooksd
+  ) |>
+  slice_head(n = 10)
+
+influence_summary
+```
+
+Influential observations should be investigated, not automatically deleted.
+They may be valid high-value properties, data-quality problems, or market
+segments that require a different model.
+
+# 9. Support valuation review
+
+## Properties with the largest test errors
+
+```{r largest-test-errors}
+valuation_review <- test_data |>
+  mutate(
+    estimated_price = predict(multiple_model, newdata = test_data),
+    residual = sale_price - estimated_price,
+    absolute_error = abs(residual),
+    error_direction = case_when(
+      residual > 0 ~ "Model underestimated sale price",
+      residual < 0 ~ "Model overestimated sale price",
+      TRUE ~ "Exact estimate"
+    )
+  ) |>
+  arrange(desc(absolute_error))
+
+valuation_review |>
+  select(
+    sale_price,
+    estimated_price,
+    absolute_error,
+    error_direction,
+    gr_liv_area,
+    year_built,
+    neighborhood
+  ) |>
+  slice_head(n = 15)
+```
+
+These records form an **appraisal-review queue**, not proof that a transaction
+was incorrectly priced. Large errors may point to omitted features, exceptional
+property condition, unusual market circumstances, or data issues.
+
+## Provide a valuation range
+
+A prediction interval communicates uncertainty for an individual property's
+sale price. The example below calculates 95% prediction intervals for a small
+sample of test properties.
+
+```{r prediction-intervals}
+interval_sample <- test_data |>
+  slice_head(n = 10)
+
+prediction_intervals <- predict(
+  multiple_model,
+  newdata = interval_sample,
+  interval = "prediction",
+  level = 0.95
+) |>
+  as_tibble() |>
+  rename(
+    estimated_price = fit,
+    lower_estimate = lwr,
+    upper_estimate = upr
+  )
+
+bind_cols(
+  interval_sample |>
+    select(sale_price, gr_liv_area, year_built, neighborhood),
+  prediction_intervals
+)
+```
+
+Prediction intervals are generally more appropriate for an individual property
+than confidence intervals for the average price. Their validity still depends
+on the model assumptions and similarity to the training market.
+
+# 10. Operational recommendation questions
+
+Use the generated results to answer:
+
+1. What price should management use as a naive baseline, and why is it limited?
+2. How much price difference is associated with an additional 100 square feet
+   in the simple model?
+3. How much of the training price variation is explained by living area alone?
+4. How much do MAE and RMSE improve after adding other property characteristics?
+5. Is the multiple model accurate enough for preliminary estimates? Define an
+   acceptable error with business stakeholders before answering.
+6. Does the model perform consistently across the price range?
+7. Which large-error properties should appraisers investigate first?
+8. Should the model produce a point estimate, a valuation range, or both?
+9. What controls should prevent the estimate from being treated as an automatic
+   final appraisal?
+
+# 11. Recommended operational workflow
+
+1. Validate incoming property measurements and category values.
+2. Generate a preliminary estimate and prediction interval.
+3. Route large, uncertain, or out-of-range valuations to an appraiser.
+4. Record the appraiser's adjustments and reasons.
+5. Compare estimates with eventual sale prices using MAE, RMSE, MAPE, and bias.
+6. Monitor error by neighborhood, price band, and property type.
+7. Retrain or retire the model when market conditions or data definitions change.
+
+# 12. Limitations
+
+- Ames transactions represent a particular place and historical period.
+- The selected predictors omit condition, remodeling, lot characteristics, and
+  many other potentially important features available in the full dataset.
+- Linear regression assumes additive, linear relationships unless terms are
+  explicitly transformed or interacted.
+- Neighborhood coefficients may absorb unmeasured local differences and should
+  not be interpreted as causal neighborhood effects.
+- A random split does not measure performance in a future housing market. A
+  date-based validation is preferable before operational deployment.
+- Extreme properties may require specialized appraisal rather than automated
+  estimation.
+
+# 13. Optional learner exercises
+
+1. Fit a second simple regression using `year_built`. Is it more useful than
+   living area alone?
+2. Add `overall_qual` to the multiple model and evaluate the change in MAE and
+   adjusted \(R^2\).
+3. Fit a model using `log(sale_price)` and compare residual patterns.
+4. Test an interaction between living area and neighborhood.
+5. Calculate mean error—not absolute error—to determine whether the model is
+   systematically overestimating or underestimating prices.
+6. Compare MAE across low-, middle-, and high-price segments.
+7. Write a short recommendation for valuation managers that separates model
+   evidence, operational judgment, and limitations.
+
+# Reproducibility information
+
+```{r session-info}
+sessionInfo()
+```

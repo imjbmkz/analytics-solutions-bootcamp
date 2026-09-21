@@ -1,0 +1,732 @@
+---
+title: "Prescriptive Analytics: Employee Retention Planning"
+subtitle: "From attrition risk to budget-constrained action"
+author: "Analytics Solutions Bootcamp"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
+
+required_packages <- c(
+  "modeldata", "tidyverse", "janitor", "rsample",
+  "recipes", "lpSolve", "scales", "broom"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Install the missing packages first: ",
+    paste(missing_packages, collapse = ", ")
+  )
+}
+
+library(modeldata)
+library(tidyverse)
+library(janitor)
+library(rsample)
+library(recipes)
+library(lpSolve)
+library(scales)
+library(broom)
+
+set.seed(123)
+```
+
+# Lab scenario
+
+An organization has a limited annual budget for employee-retention
+programs. HR cannot offer every intervention to every employee group, so
+management must decide which programs to fund and where to deploy them.
+
+This lab extends attrition classification into **prescriptive
+analytics**:
+
+-   Predictive question: Who may be at risk of leaving?
+-   Prescriptive question: What should HR do with that information?
+
+The objective is to maximize the expected financial benefit of retention
+initiatives while respecting the available budget and HR's
+implementation capacity.
+
+> **Responsible-use boundary:** The dataset is synthetic and the
+> intervention costs and effects in this lab are assumptions.
+> Recommendations are made for employee segments, not as an
+> employee-level watchlist. A real program requires privacy review,
+> fairness testing, voluntary and supportive interventions, causal
+> evidence, and human oversight. Never use attrition scores for
+> dismissal, promotion denial, surveillance, or other punitive
+> decisions.
+
+## Operational questions
+
+1.  Which workforce segments have the greatest expected turnover
+    exposure?
+2.  Which retention intervention offers the highest expected monetary
+    value for each segment?
+3.  Given a fixed budget, which segment–intervention combinations should
+    HR fund?
+4.  How much expected turnover cost could the recommended portfolio
+    avoid?
+5.  How does the recommendation change when the budget or intervention
+    effectiveness changes?
+6.  Which assumptions are most important to validate before
+    implementation?
+
+# 1. Frame the decision problem
+
+Following the components of a decision problem:
+
+| Component     | Definition in this lab                                                            |
+|------------------------------------|------------------------------------|
+| Objective     | Maximize expected net benefit from retention programs                             |
+| Alternatives  | No action, flexible work, career development, training, or compensation review    |
+| Constraints   | Annual budget and maximum number of programs HR can implement                     |
+| Uncertainty   | Whether employees would leave and whether an intervention would prevent attrition |
+| Decision unit | One intervention for an employee segment                                          |
+
+This is a **decision under risk** because probabilities can be
+estimated, but the outcomes are not certain.
+
+# 2. Load and inspect the data
+
+```{r load-data}
+data(attrition, package = "modeldata")
+
+attrition_data <- attrition |>
+  clean_names() |>
+  mutate(attrition = factor(attrition, levels = c("No", "Yes")))
+
+glimpse(attrition_data)
+```
+
+```{r data-quality-check}
+tibble(
+  employees = nrow(attrition_data),
+  variables = ncol(attrition_data),
+  duplicate_rows = sum(duplicated(attrition_data)),
+  missing_values = sum(is.na(attrition_data)),
+  observed_attrition_rate = mean(attrition_data$attrition == "Yes")
+)
+```
+
+```{r segment-overview}
+attrition_data |>
+  group_by(job_role, over_time) |>
+  summarise(
+    employees = n(),
+    employees_who_left = sum(attrition == "Yes"),
+    historical_attrition_rate = mean(attrition == "Yes"),
+    median_monthly_income = median(monthly_income),
+    .groups = "drop"
+  ) |>
+  arrange(desc(historical_attrition_rate))
+```
+
+# 3. Estimate attrition probabilities
+
+The classification model is an input to the decision—not the final
+output. We create a stratified training/test split and treat the test
+set as a simulated future planning population whose outcomes are not
+used to make decisions.
+
+Protected attributes and administrative identifiers are excluded from
+the prediction model. Protected attributes should still be retained
+separately for fairness auditing in a real implementation.
+
+```{r split-data}
+attrition_split <- initial_split(
+  attrition_data,
+  prop = 0.80,
+  strata = attrition
+)
+
+training_data <- training(attrition_split)
+planning_data <- testing(attrition_split)
+
+tibble(
+  dataset = c("Training data", "Planning population"),
+  employees = c(nrow(training_data), nrow(planning_data)),
+  attrition_rate = c(
+    mean(training_data$attrition == "Yes"),
+    mean(planning_data$attrition == "Yes")
+  )
+)
+```
+
+```{r prepare-model-data}
+excluded_variables <- c(
+  "employee_number",
+  "employee_count",
+  "over18",
+  "standard_hours",
+  "gender"
+)
+
+attrition_recipe <- recipe(attrition ~ ., data = training_data) |>
+  # step_rm(all_of(excluded_variables)) |>
+  step_novel(all_nominal_predictors()) |>
+  step_unknown(all_nominal_predictors()) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors())
+
+prepared_recipe <- prep(attrition_recipe, training = training_data)
+
+training_baked <- bake(prepared_recipe, new_data = NULL)
+planning_baked <- bake(prepared_recipe, new_data = planning_data)
+```
+
+```{r fit-risk-model}
+risk_model <- glm(
+  attrition ~ .,
+  data = training_baked,
+  family = binomial()
+)
+
+planning_scored <- planning_data |>
+  mutate(
+    predicted_attrition_probability = predict(
+      risk_model,
+      newdata = planning_baked,
+      type = "response"
+    )
+  )
+
+summary(planning_scored$predicted_attrition_probability)
+```
+
+The predicted probability is an estimate—not a fact and not a causal
+explanation. It should be recalibrated and monitored when used on a
+genuinely future population.
+
+# 4. Translate risk into expected turnover exposure
+
+For demonstration, assume that replacing an employee costs approximately
+six months of the employee's monthly income. This includes recruiting,
+onboarding, vacancy, and productivity costs. In practice, Finance and HR
+should estimate this value by role and validate it using organizational
+data.
+
+For employee $i$:
+
+$$
+\text{Expected turnover exposure}_i =
+P(\text{attrition}_i) \times \text{estimated turnover cost}_i
+$$
+
+```{r expected-exposure}
+replacement_months <- 6
+
+planning_scored <- planning_scored |>
+  mutate(
+    estimated_turnover_cost = monthly_income * replacement_months,
+    expected_turnover_exposure =
+      predicted_attrition_probability * estimated_turnover_cost
+  )
+
+planning_scored |>
+  summarise(
+    employees = n(),
+    mean_predicted_risk = mean(predicted_attrition_probability),
+    estimated_total_turnover_cost = sum(estimated_turnover_cost),
+    expected_turnover_exposure = sum(expected_turnover_exposure)
+  )
+```
+
+## Aggregate to decision segments
+
+The lab uses `job_role` and `over_time` to form operationally
+understandable segments. Very small groups should be combined or
+suppressed in production to reduce privacy and statistical-stability
+risks.
+
+```{r create-segments}
+segment_summary <- planning_scored |>
+  group_by(job_role, over_time) |>
+  summarise(
+    employees = n(),
+    mean_predicted_risk = mean(predicted_attrition_probability),
+    expected_attrition_cases = sum(predicted_attrition_probability),
+    total_expected_exposure = sum(expected_turnover_exposure),
+    .groups = "drop"
+  ) |>
+  mutate(
+    segment_id = row_number(),
+    segment = paste(job_role, paste0("Overtime: ", over_time), sep = " | ")
+  )
+
+segment_summary |>
+  arrange(desc(total_expected_exposure))
+```
+
+```{r exposure-chart}
+segment_summary |>
+  slice_max(total_expected_exposure, n = 12) |>
+  ggplot(aes(
+    x = reorder(segment, total_expected_exposure),
+    y = total_expected_exposure
+  )) +
+  geom_col(fill = "#4C78A8") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Segments with the greatest expected turnover exposure",
+    subtitle = "Exposure combines estimated attrition probability and replacement cost",
+    x = NULL,
+    y = "Expected turnover exposure"
+  ) +
+  theme_minimal()
+```
+
+# 5. Define intervention alternatives
+
+The following values are hypothetical scenario assumptions.
+`effectiveness` represents the assumed relative reduction in attrition
+risk among participating employees.
+
+```{r intervention-assumptions}
+interventions <- tribble(
+  ~intervention,          ~cost_per_employee, ~effectiveness,
+  "Flexible work",                       500,           0.10,
+  "Career development",                 1500,           0.22,
+  "Training program",                   1200,           0.18,
+  "Compensation review",                2500,           0.30
+)
+
+interventions
+```
+
+## Expected monetary value
+
+For segment $s$ and intervention $j$:
+
+$$
+\text{Expected avoided cost}_{sj} =
+\text{Expected exposure}_{s} \times \text{Effectiveness}_{j}
+$$
+
+$$
+\text{Expected net benefit}_{sj} =
+\text{Expected avoided cost}_{sj} - \text{Program cost}_{sj}
+$$
+
+```{r build-decision-options}
+decision_options <- crossing(
+  segment_summary,
+  interventions
+) |>
+  mutate(
+    option_id = row_number(),
+    program_cost = employees * cost_per_employee,
+    expected_avoided_cost = total_expected_exposure * effectiveness,
+    expected_net_benefit = expected_avoided_cost - program_cost,
+    expected_roi = expected_net_benefit / program_cost
+  )
+
+decision_options |>
+  arrange(desc(expected_net_benefit)) |>
+  select(
+    segment, intervention, employees, program_cost,
+    expected_avoided_cost, expected_net_benefit, expected_roi
+  ) |>
+  slice_head(n = 15)
+```
+
+Negative expected net benefit means that the intervention costs more
+than its estimated avoided turnover cost under the current assumptions.
+"No action" is implicitly available because the optimizer is not
+required to select an option for every segment.
+
+# 6. Optimize the retention portfolio
+
+Suppose HR has:
+
+-   an annual budget of \$150,000; and
+-   capacity to implement programs in at most six employee segments.
+
+The decision variable $x_{sj}$ is binary:
+
+-   $x_{sj}=1$: fund intervention $j$ for segment $s$;
+-   $x_{sj}=0$: do not fund it.
+
+The model maximizes total expected net benefit subject to:
+
+1.  Total program cost cannot exceed the budget.
+2.  At most one intervention may be selected for each segment.
+3.  At most six segment-level programs may be implemented.
+
+```{r optimization-inputs}
+annual_budget <- 150000
+maximum_programs <- 6
+
+number_of_options <- nrow(decision_options)
+number_of_segments <- nrow(segment_summary)
+
+budget_constraint <- decision_options$program_cost
+
+segment_constraints <- outer(
+  segment_summary$segment_id,
+  decision_options$segment_id,
+  FUN = function(segment, option_segment) {
+    as.numeric(segment == option_segment)
+  }
+)
+
+program_count_constraint <- rep(1, number_of_options)
+
+constraint_matrix <- rbind(
+  budget_constraint,
+  segment_constraints,
+  program_count_constraint
+)
+
+constraint_directions <- c(
+  "<=",
+  rep("<=", number_of_segments),
+  "<="
+)
+
+constraint_limits <- c(
+  annual_budget,
+  rep(1, number_of_segments),
+  maximum_programs
+)
+```
+
+```{r solve-optimization}
+optimization_result <- lp(
+  direction = "max",
+  objective.in = decision_options$expected_net_benefit,
+  const.mat = constraint_matrix,
+  const.dir = constraint_directions,
+  const.rhs = constraint_limits,
+  all.bin = TRUE
+)
+
+if (optimization_result$status != 0) {
+  stop("The optimization model did not find an optimal solution.")
+}
+
+recommended_portfolio <- decision_options |>
+  mutate(selected = optimization_result$solution > 0.5) |>
+  filter(selected) |>
+  arrange(desc(expected_net_benefit))
+
+recommended_portfolio |>
+  select(
+    segment, intervention, employees, mean_predicted_risk,
+    program_cost, expected_avoided_cost,
+    expected_net_benefit, expected_roi
+  )
+```
+
+```{r portfolio-summary}
+portfolio_summary <- recommended_portfolio |>
+  summarise(
+    selected_programs = n(),
+    employees_covered = sum(employees),
+    total_program_cost = sum(program_cost),
+    unused_budget = annual_budget - total_program_cost,
+    expected_avoided_cost = sum(expected_avoided_cost),
+    expected_net_benefit = sum(expected_net_benefit),
+    portfolio_roi = expected_net_benefit / total_program_cost
+  )
+
+portfolio_summary
+```
+
+## Compare with a simple ranking rule
+
+A common heuristic is to fund options from highest to lowest predicted
+risk. That approach ignores differences in employee count, turnover
+cost, program cost, and intervention effectiveness. The optimized
+recommendation explicitly balances these trade-offs.
+
+```{r compare-risk-ranking}
+risk_priority <- decision_options |>
+  group_by(segment_id) |>
+  slice_max(effectiveness, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  arrange(desc(mean_predicted_risk)) |>
+  mutate(
+    cumulative_cost = cumsum(program_cost),
+    rank = row_number()
+  ) |>
+  filter(
+    cumulative_cost <= annual_budget,
+    rank <= maximum_programs
+  )
+
+bind_rows(
+  recommended_portfolio |>
+    summarise(
+      approach = "Optimized portfolio",
+      programs = n(),
+      cost = sum(program_cost),
+      expected_avoided_cost = sum(expected_avoided_cost),
+      expected_net_benefit = sum(expected_net_benefit)
+    ),
+  risk_priority |>
+    summarise(
+      approach = "Highest-risk-first heuristic",
+      programs = n(),
+      cost = sum(program_cost),
+      expected_avoided_cost = sum(expected_avoided_cost),
+      expected_net_benefit = sum(expected_net_benefit)
+    )
+)
+```
+
+# 7. Budget scenario analysis
+
+Optimization is most useful when decision makers can ask, "What changes
+if the constraint changes?" The function below resolves the portfolio
+for different budget levels.
+
+```{r optimization-function}
+optimize_portfolio <- function(options, budget, max_programs = 6) {
+  n_options <- nrow(options)
+  segment_ids <- sort(unique(options$segment_id))
+
+  segment_matrix <- outer(
+  segment_ids,
+  options$segment_id,
+  FUN = function(segment, option_segment) {
+    as.numeric(segment == option_segment)
+  }
+)
+
+  constraint_matrix <- rbind(
+    options$program_cost,
+    segment_matrix,
+    rep(1, n_options)
+  )
+
+  result <- lp(
+    direction = "max",
+    objective.in = options$expected_net_benefit,
+    const.mat = constraint_matrix,
+    const.dir = c("<=", rep("<=", length(segment_ids)), "<="),
+    const.rhs = c(budget, rep(1, length(segment_ids)), max_programs),
+    all.bin = TRUE
+  )
+
+  if (result$status != 0) {
+    return(tibble(
+      budget = budget,
+      selected_programs = NA_integer_,
+      total_cost = NA_real_,
+      expected_avoided_cost = NA_real_,
+      expected_net_benefit = NA_real_
+    ))
+  }
+
+  selected <- options[result$solution > 0.5, ]
+
+  tibble(
+    budget = budget,
+    selected_programs = nrow(selected),
+    total_cost = sum(selected$program_cost),
+    expected_avoided_cost = sum(selected$expected_avoided_cost),
+    expected_net_benefit = sum(selected$expected_net_benefit)
+  )
+}
+```
+
+```{r budget-scenarios}
+budget_results <- map_dfr(
+  seq(50000, 300000, by = 25000),
+  ~ optimize_portfolio(decision_options, budget = .x)
+)
+
+budget_results
+```
+
+```{r budget-scenario-chart}
+budget_results |>
+  ggplot(aes(budget, expected_net_benefit)) +
+  geom_line(color = "#4C78A8", linewidth = 1) +
+  geom_point(color = "#4C78A8", size = 2.5) +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Expected net benefit at different HR budgets",
+    subtitle = "A flat section indicates that additional budget does not improve the current solution",
+    x = "Available retention budget",
+    y = "Maximum expected net benefit"
+  ) +
+  theme_minimal()
+```
+
+# 8. Effectiveness sensitivity analysis
+
+Intervention effectiveness is uncertain. Test pessimistic, base, and
+optimistic assumptions by applying a multiplier to every intervention's
+effectiveness.
+
+```{r effectiveness-scenarios}
+effectiveness_scenarios <- tribble(
+  ~scenario,      ~effectiveness_multiplier,
+  "Pessimistic",                      0.60,
+  "Base",                             1.00,
+  "Optimistic",                       1.30
+)
+
+effectiveness_results <- effectiveness_scenarios |>
+  mutate(
+    options = map(effectiveness_multiplier, function(multiplier) {
+      decision_options |>
+        mutate(
+          scenario_effectiveness = pmin(effectiveness * multiplier, 1),
+          expected_avoided_cost =
+            total_expected_exposure * scenario_effectiveness,
+          expected_net_benefit = expected_avoided_cost - program_cost
+        )
+    }),
+    result = map(
+      options,
+      ~ optimize_portfolio(
+        .x,
+        budget = annual_budget,
+        max_programs = maximum_programs
+      )
+    )
+  ) |>
+  select(scenario, effectiveness_multiplier, result) |>
+  unnest(result)
+
+effectiveness_results
+```
+
+## Interpretation questions
+
+-   Does the recommended portfolio remain valuable under pessimistic
+    assumptions?
+-   Which recommendation changes first when effectiveness declines?
+-   At what budget level do expected benefits begin to flatten?
+-   Is unused budget evidence of an error, or are no additional options
+    valuable under the model assumptions?
+-   Which assumptions should HR test through a small pilot before
+    scaling?
+
+# 9. Fairness, privacy, and governance checks
+
+Optimization can make a mathematically efficient recommendation that is
+still unfair, infeasible, or harmful. Review the selected segments
+before acting.
+
+```{r governance-review}
+governance_review <- recommended_portfolio |>
+  transmute(
+    segment,
+    intervention,
+    employees,
+    mean_predicted_risk,
+    expected_net_benefit,
+    review_small_group = employees < 10,
+    review_high_risk_label = mean_predicted_risk >= 0.50
+  )
+
+governance_review
+```
+
+Required controls for a real deployment include:
+
+1.  **Data minimization:** Use only information necessary for supportive
+    action.
+2.  **Access control:** Restrict employee-level data and model outputs.
+3.  **Fairness audit:** Examine whether error rates and benefits differ
+    across protected groups, even when protected attributes are excluded
+    as predictors.
+4.  **Causal validation:** Do not assume observational associations
+    prove that an intervention will reduce attrition.
+5.  **Human review:** Managers and HR should assess feasibility and
+    employee welfare before implementation.
+6.  **Voluntary participation:** Retention programs should benefit
+    employees and avoid coercion or stigma.
+7.  **Monitoring:** Compare projected and realized costs, participation,
+    employee outcomes, and attrition after deployment.
+
+# 10. Recommended operational workflow
+
+1.  Validate the attrition model on recent, representative data.
+2.  Estimate actual turnover costs with Finance and operating teams.
+3.  Estimate intervention effects using historical evaluations or a
+    pilot.
+4.  Define budget, capacity, policy, and fairness constraints with
+    stakeholders.
+5.  Generate the optimized portfolio.
+6.  Conduct human, privacy, fairness, and feasibility reviews.
+7.  Pilot the intervention with employee consent.
+8.  Measure outcomes and update the assumptions before scaling.
+
+# 11. Conclusions
+
+Complete these statements after running the lab:
+
+-   The planning population contains `r nrow(planning_scored)` employees
+    across `r nrow(segment_summary)` segments.
+-   Under a budget of `r dollar(annual_budget)`, the optimization
+    selects `r nrow(recommended_portfolio)` segment-level programs.
+-   The recommended portfolio costs
+    `r dollar(sum(recommended_portfolio$program_cost))` and has an
+    expected net benefit of
+    `r dollar(sum(recommended_portfolio$expected_net_benefit))`.
+-   These are model-based expectations, not guaranteed savings.
+-   The recommendation is valid only to the extent that the risk,
+    turnover-cost, and intervention-effect assumptions are credible.
+
+# 12. Learner exercises
+
+1.  Change the annual budget to \$75,000 and \$250,000. Which
+    recommendations change, and why?
+2.  Add a constraint that at least one non-overtime segment must receive
+    a program. Explain the business justification and trade-off.
+3.  Allow no more than two compensation-review programs. How does this
+    affect expected net benefit?
+4.  Replace six months of income with three, nine, and twelve months
+    when estimating turnover cost. Compare the solutions.
+5.  Create an intervention designed specifically for overtime-related
+    workload. Define a defensible cost and effectiveness range.
+6.  Compare the optimized portfolio with a highest-risk-first and a
+    highest-ROI-first heuristic.
+7.  Design a randomized pilot that could estimate intervention
+    effectiveness more credibly.
+8.  Identify sensitive variables that should not be used for
+    intervention targeting, and explain why.
+
+# 13. Key limitations
+
+-   The attrition data are synthetic and may not represent a real
+    organization.
+-   The test set is used as a simulated future planning population.
+-   Intervention costs, effectiveness, and turnover costs are
+    assumptions.
+-   Logistic regression estimates association, not the causal effect of
+    an intervention.
+-   Segment-level treatment assumes employees within a segment receive
+    the same program and benefit equally.
+-   Expected monetary value summarizes uncertainty but does not
+    eliminate it.
+-   Financial benefit is only one objective; employee well-being,
+    equity, legal requirements, and organizational feasibility must also
+    guide decisions.

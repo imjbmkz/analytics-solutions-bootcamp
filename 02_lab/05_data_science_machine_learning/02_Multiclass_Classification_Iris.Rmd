@@ -1,0 +1,888 @@
+---
+title: "Iris Species: Classification, Clustering, and PCA Lab"
+subtitle: "Comparing supervised and unsupervised approaches to flower morphology"
+author: "Analytics Solutions Bootcamp"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
+
+required_packages <- c(
+  "tidyverse", "janitor", "rsample", "rpart", "rpart.plot",
+  "yardstick", "cluster", "scales"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Install the missing packages first: ",
+    paste(missing_packages, collapse = ", ")
+  )
+}
+
+library(tidyverse)
+library(janitor)
+library(rsample)
+library(rpart)
+library(rpart.plot)
+library(yardstick)
+library(cluster)
+library(scales)
+
+set.seed(123)
+```
+
+# Research scenario
+
+A botanical field team studies three iris species using four measurements:
+sepal length, sepal width, petal length, and petal width. The team wants to know
+whether morphology can support species identification and whether natural
+groups emerge even when species labels are hidden.
+
+The lab compares four analytical approaches:
+
+1. Decision tree using the original measurements
+2. Best K-means model using an optimized subset of measurements
+3. Decision tree using selected principal components
+4. K-means using selected principal components
+
+## Research questions
+
+1. How do the four measurements vary among the three species?
+2. Which combinations of measurements produce the most cohesive and separated
+   natural clusters?
+3. Does the optimal number of clusters agree with the three known species?
+4. How closely do unlabeled clusters correspond to the actual species?
+5. How many principal components are needed to retain at least 90% of the
+   standardized measurement variance?
+6. Does PCA preserve enough information for species identification and
+   clustering?
+7. Which of the four approaches best recovers the known species on held-out
+   specimens?
+
+> **Methodological note:** Species labels are used to train decision trees.
+> K-means does not use species labels to form clusters. Feature combinations and
+> cluster counts are selected using silhouette score on training measurements.
+> Labels are consulted afterward only to evaluate and interpret the clusters.
+
+# 1. Load and inspect the data
+
+```{r load-data}
+data(iris)
+
+iris_data <- iris |>
+  clean_names() |>
+  mutate(species = factor(species))
+
+feature_names <- c(
+  "sepal_length", "sepal_width", "petal_length", "petal_width"
+)
+
+glimpse(iris_data)
+```
+
+```{r data-quality}
+tibble(
+  specimens = nrow(iris_data),
+  variables = ncol(iris_data),
+  duplicate_rows = sum(duplicated(iris_data)),
+  missing_values = sum(is.na(iris_data))
+)
+```
+
+```{r class-distribution}
+iris_data |>
+  count(species) |>
+  mutate(proportion = percent(n / sum(n), accuracy = 0.1))
+```
+
+# 2. Explore flower morphology
+
+```{r species-summary}
+iris_data |>
+  group_by(species) |>
+  summarise(
+    specimens = n(),
+    across(
+      all_of(feature_names),
+      list(mean = mean, sd = sd),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r measurement-boxplots, fig.height=8}
+iris_data |>
+  pivot_longer(
+    all_of(feature_names),
+    names_to = "measurement",
+    values_to = "centimeters"
+  ) |>
+  ggplot(aes(species, centimeters, fill = species)) +
+  geom_boxplot(show.legend = FALSE) +
+  facet_wrap(~ measurement, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Flower measurements by iris species",
+    x = "Species",
+    y = "Measurement (cm)"
+  ) +
+  theme_minimal()
+```
+
+```{r morphology-scatter}
+ggplot(
+  iris_data,
+  aes(petal_length, petal_width, color = species, shape = species)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(
+    title = "Petal morphology of the three iris species",
+    x = "Petal length (cm)",
+    y = "Petal width (cm)",
+    color = "Species",
+    shape = "Species"
+  ) +
+  theme_minimal()
+```
+
+# 3. Create training and test samples
+
+All optimization occurs using the training data. The test data is reserved for
+the final four-model comparison.
+
+```{r split-data}
+iris_split <- initial_split(
+  iris_data,
+  prop = 0.80,
+  strata = species
+)
+
+train_data <- training(iris_split)
+test_data <- testing(iris_split)
+
+bind_rows(
+  train_data |> count(species) |> mutate(dataset = "Training"),
+  test_data |> count(species) |> mutate(dataset = "Test")
+) |>
+  group_by(dataset) |>
+  mutate(proportion = percent(n / sum(n), accuracy = 0.1)) |>
+  ungroup()
+```
+
+# 4. Helper functions
+
+The functions below keep preprocessing consistent and allow K-means clusters to
+be applied to held-out specimens.
+
+```{r helper-functions}
+# Scale test data using means and standard deviations learned from training data.
+standardize_pair <- function(train_matrix, test_matrix) {
+  train_matrix <- as.matrix(train_matrix)
+  test_matrix <- as.matrix(test_matrix)
+
+  centers <- colMeans(train_matrix)
+  scales <- apply(train_matrix, 2, sd)
+
+  list(
+    train = scale(train_matrix, center = centers, scale = scales),
+    test = scale(test_matrix, center = centers, scale = scales),
+    center = centers,
+    scale = scales
+  )
+}
+
+# Assign new rows to the nearest fitted K-means centroid.
+nearest_cluster <- function(new_matrix, centers) {
+  apply(new_matrix, 1, function(observation) {
+    distances <- rowSums(
+      (centers - matrix(
+        observation,
+        nrow = nrow(centers),
+        ncol = ncol(centers),
+        byrow = TRUE
+      ))^2
+    )
+    which.min(distances)
+  })
+}
+
+# Map each training cluster to its most frequent known species.
+learn_cluster_labels <- function(clusters, truth) {
+  tibble(cluster = clusters, species = truth) |>
+    count(cluster, species) |>
+    group_by(cluster) |>
+    slice_max(n, n = 1, with_ties = FALSE) |>
+    ungroup() |>
+    select(cluster, species)
+}
+
+map_clusters_to_species <- function(clusters, label_map, species_levels) {
+  lookup <- setNames(as.character(label_map$species), label_map$cluster)
+  factor(lookup[as.character(clusters)], levels = species_levels)
+}
+
+# Adjusted Rand Index: label-invariant agreement between two partitions.
+adjusted_rand_index <- function(truth, estimate) {
+  tab <- table(truth, estimate)
+  choose_2 <- function(x) x * (x - 1) / 2
+
+  sum_cells <- sum(choose_2(tab))
+  sum_rows <- sum(choose_2(rowSums(tab)))
+  sum_cols <- sum(choose_2(colSums(tab)))
+  total_pairs <- choose_2(sum(tab))
+  expected <- sum_rows * sum_cols / total_pairs
+  maximum <- (sum_rows + sum_cols) / 2
+
+  (sum_cells - expected) / (maximum - expected)
+}
+
+macro_classification_metrics <- function(truth, estimate) {
+  per_class <- map_dfr(levels(truth), function(current_class) {
+    truth_binary <- factor(
+      if_else(truth == current_class, current_class, "Other"),
+      levels = c("Other", current_class)
+    )
+    estimate_binary <- factor(
+      if_else(estimate == current_class, current_class, "Other"),
+      levels = c("Other", current_class)
+    )
+
+    tibble(
+      precision = precision_vec(
+        truth_binary, estimate_binary, event_level = "second"
+      ),
+      recall = sens_vec(
+        truth_binary, estimate_binary, event_level = "second"
+      ),
+      f1 = f_meas_vec(
+        truth_binary, estimate_binary, event_level = "second"
+      )
+    )
+  })
+
+  tibble(
+    accuracy = accuracy_vec(truth, estimate),
+    macro_precision = mean(per_class$precision, na.rm = TRUE),
+    macro_recall = mean(per_class$recall, na.rm = TRUE),
+    macro_f1 = mean(per_class$f1, na.rm = TRUE),
+    ari = adjusted_rand_index(truth, estimate)
+  )
+}
+```
+
+# 5. Zero-rule baseline
+
+The zero-rule classifier predicts the most frequent training species for every
+test specimen. Since the classes are balanced, its expected accuracy is about
+one third.
+
+```{r baseline}
+majority_species <- train_data |>
+  count(species, sort = TRUE) |>
+  slice(1) |>
+  pull(species) |>
+  as.character()
+
+baseline_class <- factor(
+  rep(majority_species, nrow(test_data)),
+  levels = levels(iris_data$species)
+)
+
+accuracy_vec(test_data$species, baseline_class)
+```
+
+# 6. Decision tree using original features
+
+```{r feature-tree}
+feature_tree_full <- rpart(
+  species ~ sepal_length + sepal_width + petal_length + petal_width,
+  data = train_data,
+  method = "class",
+  parms = list(split = "information"),
+  control = rpart.control(cp = 0.001, minsplit = 10, xval = 10)
+)
+
+feature_tree_cp <- feature_tree_full$cptable[
+  which.min(feature_tree_full$cptable[, "xerror"]),
+  "CP"
+]
+
+feature_tree <- prune(feature_tree_full, cp = feature_tree_cp)
+
+feature_tree_prediction <- predict(
+  feature_tree,
+  newdata = test_data,
+  type = "class"
+)
+```
+
+```{r plot-feature-tree, fig.height=7}
+rpart.plot(
+  feature_tree,
+  type = 2,
+  extra = 104,
+  fallen.leaves = TRUE,
+  box.palette = "GnBu",
+  shadow.col = "gray",
+  nn = TRUE
+)
+```
+
+```{r feature-importance}
+enframe(
+  feature_tree$variable.importance,
+  name = "measurement",
+  value = "importance"
+) |>
+  mutate(relative_importance = importance / sum(importance)) |>
+  arrange(desc(relative_importance))
+```
+
+# 7. Optimize K-means feature combinations
+
+K-means is sensitive to scale, so every candidate feature set is standardized
+using training statistics. We test all nonempty combinations of the four
+features and candidate values of \(k\) from 2 to 6.
+
+The selection criterion is **average silhouette width**:
+
+- Values near 1 indicate compact, well-separated clusters.
+- Values near 0 indicate overlapping clusters.
+- Negative values suggest possible misassignment.
+
+Species labels are not used in this search.
+
+```{r feature-combination-search}
+feature_combinations <- map(
+  seq_along(feature_names),
+  ~ combn(feature_names, .x, simplify = FALSE)
+) |>
+  flatten()
+
+evaluate_kmeans_candidate <- function(features, k) {
+  candidate_matrix <- train_data |>
+    select(all_of(features)) |>
+    scale()
+
+  set.seed(123)
+  fitted <- kmeans(candidate_matrix, centers = k, nstart = 50)
+  silhouette_values <- silhouette(
+    fitted$cluster,
+    dist(candidate_matrix)
+  )
+
+  tibble(
+    features = paste(features, collapse = " + "),
+    feature_count = length(features),
+    k = k,
+    silhouette = mean(silhouette_values[, "sil_width"])
+  )
+}
+
+kmeans_search <- map_dfr(feature_combinations, function(features) {
+  map_dfr(2:6, ~ evaluate_kmeans_candidate(features, .x))
+})
+
+kmeans_search |>
+  arrange(desc(silhouette)) |>
+  slice_head(n = 15)
+```
+
+```{r optimal-feature-model}
+best_feature_candidate <- kmeans_search |>
+  slice_max(silhouette, n = 1, with_ties = FALSE)
+
+best_feature_names <- str_split(
+  best_feature_candidate$features,
+  fixed(" + ")
+)[[1]]
+
+best_feature_k <- best_feature_candidate$k[[1]]
+
+best_feature_candidate
+```
+
+```{r silhouette-search-chart}
+kmeans_search |>
+  group_by(features) |>
+  slice_max(silhouette, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  slice_max(silhouette, n = 10) |>
+  mutate(features = reorder(features, silhouette)) |>
+  ggplot(aes(features, silhouette, fill = factor(k))) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Best K-means result for each leading feature combination",
+    subtitle = "Selection uses training-data silhouette score, not species labels",
+    x = "Feature combination",
+    y = "Average silhouette width",
+    fill = "Optimal k"
+  ) +
+  theme_minimal()
+```
+
+## Fit and apply the best feature-based K-means model
+
+```{r best-feature-kmeans}
+feature_scaled <- standardize_pair(
+  train_data |> select(all_of(best_feature_names)),
+  test_data |> select(all_of(best_feature_names))
+)
+
+set.seed(123)
+best_feature_kmeans <- kmeans(
+  feature_scaled$train,
+  centers = best_feature_k,
+  nstart = 100
+)
+
+feature_cluster_map <- learn_cluster_labels(
+  best_feature_kmeans$cluster,
+  train_data$species
+)
+
+feature_test_clusters <- nearest_cluster(
+  feature_scaled$test,
+  best_feature_kmeans$centers
+)
+
+feature_kmeans_prediction <- map_clusters_to_species(
+  feature_test_clusters,
+  feature_cluster_map,
+  levels(iris_data$species)
+)
+
+feature_cluster_map
+```
+
+## Compare training clusters with actual classes
+
+```{r feature-cluster-class-comparison}
+table(
+  Actual_species = train_data$species,
+  Kmeans_cluster = best_feature_kmeans$cluster
+)
+
+adjusted_rand_index(
+  train_data$species,
+  best_feature_kmeans$cluster
+)
+```
+
+The Adjusted Rand Index (ARI) compares two partitions without requiring cluster
+numbers to match species names. A value near 1 indicates strong agreement; a
+value near 0 indicates agreement similar to chance.
+
+# 8. Principal component analysis
+
+PCA transforms correlated measurements into uncorrelated components. It is fit
+on standardized training measurements only. We retain the smallest number of
+components whose cumulative explained variance reaches 90%.
+
+```{r pca-fit}
+pca_model <- prcomp(
+  train_data |> select(all_of(feature_names)),
+  center = TRUE,
+  scale. = TRUE
+)
+
+pca_variance <- tibble(
+  component = seq_along(pca_model$sdev),
+  principal_component = paste0("PC", component),
+  variance_explained = pca_model$sdev^2 / sum(pca_model$sdev^2)
+) |>
+  mutate(cumulative_variance = cumsum(variance_explained))
+
+pca_variance
+```
+
+```{r pca-component-selection}
+variance_threshold <- 0.90
+
+optimal_pc_count <- which(
+  pca_variance$cumulative_variance >= variance_threshold
+)[1]
+
+optimal_pc_names <- paste0("PC", seq_len(optimal_pc_count))
+
+tibble(
+  variance_threshold = percent(variance_threshold),
+  retained_components = optimal_pc_count,
+  retained_variance = percent(
+    pca_variance$cumulative_variance[optimal_pc_count],
+    accuracy = 0.1
+  )
+)
+```
+
+```{r scree-chart}
+ggplot(pca_variance, aes(component, variance_explained)) +
+  geom_col(fill = "#4C78A8") +
+  geom_line(aes(y = cumulative_variance), color = "#E45756") +
+  geom_point(aes(y = cumulative_variance), color = "#E45756") +
+  geom_hline(
+    yintercept = variance_threshold,
+    linetype = "dashed",
+    color = "#54A24B"
+  ) +
+  scale_x_continuous(breaks = pca_variance$component) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  labs(
+    title = "PCA explained variance",
+    subtitle = "Bars: individual variance; red line: cumulative variance",
+    x = "Principal component",
+    y = "Share of standardized variance"
+  ) +
+  theme_minimal()
+```
+
+## Interpret component loadings
+
+```{r pca-loadings}
+as_tibble(
+  pca_model$rotation[, optimal_pc_names, drop = FALSE],
+  rownames = "measurement"
+)
+```
+
+Large positive or negative loadings indicate measurements that contribute
+strongly to a component. The sign indicates direction, not importance by itself.
+
+## Transform training and test data
+
+```{r pca-scores}
+train_pc_scores <- predict(
+  pca_model,
+  newdata = train_data |> select(all_of(feature_names))
+) |>
+  as_tibble()
+
+test_pc_scores <- predict(
+  pca_model,
+  newdata = test_data |> select(all_of(feature_names))
+) |>
+  as_tibble()
+
+train_pc_data <- train_pc_scores |>
+  select(all_of(optimal_pc_names)) |>
+  mutate(species = train_data$species)
+
+test_pc_data <- test_pc_scores |>
+  select(all_of(optimal_pc_names)) |>
+  mutate(species = test_data$species)
+```
+
+```{r pca-species-chart}
+if (optimal_pc_count >= 2) {
+  ggplot(
+    train_pc_data,
+    aes(PC1, PC2, color = species, shape = species)
+  ) +
+    geom_point(size = 3, alpha = 0.8) +
+    labs(
+      title = "Training specimens in principal-component space",
+      color = "Species",
+      shape = "Species"
+    ) +
+    theme_minimal()
+}
+```
+
+# 9. Decision tree using optimal principal components
+
+```{r pca-tree}
+pca_tree_full <- rpart(
+  species ~ .,
+  data = train_pc_data,
+  method = "class",
+  parms = list(split = "information"),
+  control = rpart.control(cp = 0.001, minsplit = 10, xval = 10)
+)
+
+pca_tree_cp <- pca_tree_full$cptable[
+  which.min(pca_tree_full$cptable[, "xerror"]),
+  "CP"
+]
+
+pca_tree <- prune(pca_tree_full, cp = pca_tree_cp)
+
+pca_tree_prediction <- predict(
+  pca_tree,
+  newdata = test_pc_data,
+  type = "class"
+)
+```
+
+```{r plot-pca-tree, fig.height=7}
+rpart.plot(
+  pca_tree,
+  type = 2,
+  extra = 104,
+  fallen.leaves = TRUE,
+  box.palette = "GnBu",
+  shadow.col = "gray",
+  nn = TRUE
+)
+```
+
+# 10. K-means using optimal principal components
+
+The retained PCs already come from standardized inputs and are mutually
+uncorrelated. We choose \(k\) using training-data silhouette score.
+
+```{r pca-k-search}
+pca_train_matrix <- train_pc_scores |>
+  select(all_of(optimal_pc_names)) |>
+  as.matrix()
+
+pca_test_matrix <- test_pc_scores |>
+  select(all_of(optimal_pc_names)) |>
+  as.matrix()
+
+pca_k_search <- map_dfr(2:6, function(k) {
+  set.seed(123)
+  fitted <- kmeans(pca_train_matrix, centers = k, nstart = 50)
+  silhouette_values <- silhouette(
+    fitted$cluster,
+    dist(pca_train_matrix)
+  )
+
+  tibble(
+    k = k,
+    silhouette = mean(silhouette_values[, "sil_width"])
+  )
+})
+
+pca_k_search
+```
+
+```{r best-pca-kmeans}
+best_pca_k <- pca_k_search |>
+  slice_max(silhouette, n = 1, with_ties = FALSE) |>
+  pull(k)
+
+set.seed(123)
+pca_kmeans <- kmeans(
+  pca_train_matrix,
+  centers = best_pca_k,
+  nstart = 100
+)
+
+pca_cluster_map <- learn_cluster_labels(
+  pca_kmeans$cluster,
+  train_data$species
+)
+
+pca_test_clusters <- nearest_cluster(
+  pca_test_matrix,
+  pca_kmeans$centers
+)
+
+pca_kmeans_prediction <- map_clusters_to_species(
+  pca_test_clusters,
+  pca_cluster_map,
+  levels(iris_data$species)
+)
+
+tibble(
+  retained_components = optimal_pc_count,
+  optimal_k = best_pca_k,
+  silhouette = max(pca_k_search$silhouette)
+)
+```
+
+```{r pca-cluster-class-comparison}
+table(
+  Actual_species = train_data$species,
+  PCA_Kmeans_cluster = pca_kmeans$cluster
+)
+
+adjusted_rand_index(
+  train_data$species,
+  pca_kmeans$cluster
+)
+```
+
+# 11. Final comparison of four approaches
+
+For a fair final comparison, all four approaches are evaluated on the same
+untouched test specimens.
+
+For K-means, training clusters are mapped to their majority species and test
+specimens are assigned to the nearest centroid. Accuracy, precision, recall,
+and F1 therefore measure recovery of the known species after mapping. ARI is
+also reported because it evaluates partition agreement without depending on
+label names.
+
+```{r final-comparison}
+comparison_results <- bind_rows(
+  macro_classification_metrics(
+    test_data$species,
+    feature_tree_prediction
+  ) |>
+    mutate(model = "Decision tree: original features"),
+  macro_classification_metrics(
+    test_data$species,
+    feature_kmeans_prediction
+  ) |>
+    mutate(model = "Best K-means: selected features"),
+  macro_classification_metrics(
+    test_data$species,
+    pca_tree_prediction
+  ) |>
+    mutate(model = "Decision tree: selected PCs"),
+  macro_classification_metrics(
+    test_data$species,
+    pca_kmeans_prediction
+  ) |>
+    mutate(model = "K-means: selected PCs")
+) |>
+  select(model, everything()) |>
+  arrange(desc(accuracy), desc(macro_f1))
+
+comparison_results |>
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+```
+
+```{r final-comparison-chart, fig.height=7}
+comparison_results |>
+  pivot_longer(
+    c(accuracy, macro_precision, macro_recall, macro_f1, ari),
+    names_to = "metric",
+    values_to = "estimate"
+  ) |>
+  ggplot(aes(reorder(model, estimate), estimate, fill = model)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~ metric, ncol = 2) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Test performance of the four analytical approaches",
+    x = NULL,
+    y = "Metric value"
+  ) +
+  theme_minimal()
+```
+
+## Confusion matrices
+
+```{r all-confusion-matrices}
+prediction_sets <- list(
+  "Decision tree: original features" = feature_tree_prediction,
+  "Best K-means: selected features" = feature_kmeans_prediction,
+  "Decision tree: selected PCs" = pca_tree_prediction,
+  "K-means: selected PCs" = pca_kmeans_prediction
+)
+
+walk(names(prediction_sets), function(model_name) {
+  cat("\n\n### ", model_name, "\n\n", sep = "")
+  print(
+    conf_mat(
+      tibble(
+        truth = test_data$species,
+        estimate = prediction_sets[[model_name]]
+      ),
+      truth,
+      estimate
+    )
+  )
+})
+```
+
+## Model-selection summary
+
+```{r selection-summary}
+tibble(
+  item = c(
+    "Best raw-feature combination",
+    "Best raw-feature K-means k",
+    "Best raw-feature silhouette",
+    "PCA variance threshold",
+    "Retained principal components",
+    "Best PCA K-means k",
+    "Best PCA K-means silhouette"
+  ),
+  result = c(
+    best_feature_candidate$features,
+    as.character(best_feature_k),
+    round(best_feature_candidate$silhouette, 3),
+    percent(variance_threshold),
+    paste(optimal_pc_names, collapse = " + "),
+    as.character(best_pca_k),
+    round(max(pca_k_search$silhouette), 3)
+  )
+)
+```
+
+# 12. Interpret the research findings
+
+Use the outputs to answer:
+
+1. Which original measurements most clearly separate the species?
+2. Which feature combination and value of \(k\) maximize silhouette score?
+3. Does the internally optimal \(k\) match the three known species? If not, what
+   does that reveal about natural morphological groupings?
+4. Which known species is recovered most cleanly by K-means?
+5. How much standardized variance is retained by the selected PCs?
+6. Which original measurements contribute most strongly to the retained PCs?
+7. Does using PCA improve or reduce decision-tree performance?
+8. Does using PCA improve cluster cohesion or agreement with known species?
+9. Which of the four methods has the best test accuracy and macro F1 score?
+10. Do silhouette and ARI select the same preferred clustering solution? Explain
+    why an internally cohesive clustering can still disagree with known labels.
+
+# 13. Limitations and responsible interpretation
+
+- K-means finds geometric groups; it does not discover biological truth.
+- Selecting the feature set by silhouette favors cluster geometry, not recovery
+  of species labels.
+- Mapping clusters to species is performed only to interpret and evaluate the
+  clusters. It does not turn K-means into a supervised training algorithm.
+- The Iris dataset is small, balanced, and historically used for teaching.
+- A random split does not test generalization to another location, season, or
+  measurement team.
+- PCA maximizes retained variance, not classification accuracy or biological
+  importance.
+- Decision-tree splits and PCA loadings describe patterns, not biological causes.
+- A single split can produce unstable rankings; repeated cross-validation or
+  repeated train/test experiments should be used for stronger conclusions.
+
+# 14. Optional learner exercises
+
+1. Force \(k=3\) for every K-means candidate and compare the outcome with the
+   silhouette-selected models.
+2. Select the best feature combination using ARI instead of silhouette. Explain
+   why this changes the problem from purely unsupervised selection.
+3. Change the PCA threshold to 80% and 95%. How do the retained PCs and model
+   rankings change?
+4. Repeat the entire workflow across several random seeds and summarize the
+   variability of each metric.
+5. Compare the one-standard-error pruning rule with minimum cross-validation
+   error for both decision trees.
+6. Investigate misclassified specimens and propose additional measurements that
+   could distinguish `versicolor` from `virginica`.
+
+# Reproducibility information
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,686 @@
+---
+title: "Employee Attrition: Binary Classification Lab"
+subtitle: "From operational questions to retention decisions"
+author: "Analytics Solutions Bootcamp"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
+
+required_packages <- c(
+  "modeldata", "tidyverse", "janitor", "rsample",
+  "rpart", "rpart.plot", "yardstick", "broom", "scales"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Install the missing packages first: ",
+    paste(missing_packages, collapse = ", ")
+  )
+}
+
+library(modeldata)
+library(tidyverse)
+library(janitor)
+library(rsample)
+library(rpart)
+library(rpart.plot)
+library(yardstick)
+library(broom)
+library(scales)
+
+set.seed(123)
+```
+
+# Lab scenario
+
+An organization wants to use its historical employee records to support a
+targeted retention program. The goal is not simply to build the model with the
+highest accuracy. HR needs a solution that can identify employees who may need
+support while keeping the number of employees contacted manageable.
+
+The response variable is `attrition`:
+
+- `Yes`: the employee left the organization.
+- `No`: the employee stayed.
+
+## Operational questions
+
+This lab will answer the following questions:
+
+1. What proportion of employees left the organization?
+2. Which employee groups have relatively high historical attrition rates?
+3. Can employee information help HR prioritize employees for a retention review?
+4. Which model—logistic regression or a decision tree—better supports the
+   operational goal?
+5. How many actual attrition cases would each model miss?
+6. If HR can only review a limited number of employees, how should the
+   classification threshold be selected?
+7. What patterns can HR investigate without incorrectly treating model results
+   as causal explanations?
+
+> **Important:** This is a synthetic dataset intended for instruction. A real
+> employee-risk system requires privacy review, fairness testing, human
+> oversight, and validation using current organizational data. Predictions
+> should support employee assistance—not punitive decisions.
+
+# 1. Load and understand the data
+
+```{r load-data}
+data(attrition, package = "modeldata")
+
+attrition_data <- attrition |>
+  clean_names() |>
+  mutate(attrition = factor(attrition, levels = c("No", "Yes")))
+
+glimpse(attrition_data)
+```
+
+```{r data-size}
+tibble(
+  employees = nrow(attrition_data),
+  variables = ncol(attrition_data),
+  duplicate_rows = sum(duplicated(attrition_data)),
+  missing_values = sum(is.na(attrition_data))
+)
+```
+
+Before modeling, confirm that the response has exactly two possible classes.
+
+```{r target-check}
+attrition_data |>
+  count(attrition) |>
+  mutate(proportion = percent(n / sum(n), accuracy = 0.1))
+```
+
+# 2. Explore the operational problem
+
+## Overall attrition rate
+
+```{r attrition-rate}
+overall_attrition <- attrition_data |>
+  summarise(
+    employees = n(),
+    employees_who_left = sum(attrition == "Yes"),
+    attrition_rate = mean(attrition == "Yes")
+  )
+
+overall_attrition
+```
+
+```{r attrition-chart}
+attrition_data |>
+  count(attrition) |>
+  mutate(share = n / sum(n)) |>
+  ggplot(aes(attrition, n, fill = attrition)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(
+    aes(label = paste0(n, " (", percent(share, accuracy = 0.1), ")")),
+    vjust = -0.4
+  ) +
+  scale_fill_manual(values = c("No" = "#4C78A8", "Yes" = "#E45756")) +
+  expand_limits(y = max(table(attrition_data$attrition)) * 1.1) +
+  labs(
+    title = "Historical employee attrition",
+    subtitle = "The class distribution determines whether accuracy is sufficient",
+    x = "Employee left the organization",
+    y = "Number of employees"
+  ) +
+  theme_minimal()
+```
+
+## Where is attrition concentrated?
+
+The following summaries help HR decide which workforce conditions deserve
+further investigation. They describe associations and do not establish causes.
+
+```{r operational-summary-function}
+attrition_summary <- function(data, group_variable) {
+  data |>
+    group_by({{ group_variable }}) |>
+    summarise(
+      employees = n(),
+      employees_who_left = sum(attrition == "Yes"),
+      attrition_rate = mean(attrition == "Yes"),
+      .groups = "drop"
+    ) |>
+    arrange(desc(attrition_rate))
+}
+```
+
+```{r overtime-summary}
+attrition_summary(attrition_data, over_time)
+```
+
+```{r job-role-summary}
+attrition_summary(attrition_data, job_role)
+```
+
+```{r travel-summary}
+attrition_summary(attrition_data, business_travel)
+```
+
+```{r satisfaction-summary}
+attrition_summary(attrition_data, job_satisfaction)
+```
+
+```{r income-by-attrition}
+attrition_data |>
+  group_by(attrition) |>
+  summarise(
+    employees = n(),
+    median_monthly_income = median(monthly_income),
+    median_years_at_company = median(years_at_company),
+    median_distance_from_home = median(distance_from_home),
+    .groups = "drop"
+  )
+```
+
+```{r overtime-chart}
+attrition_summary(attrition_data, over_time) |>
+  ggplot(aes(over_time, attrition_rate, fill = over_time)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(
+    aes(label = percent(attrition_rate, accuracy = 0.1)),
+    vjust = -0.4
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, NA)) +
+  labs(
+    title = "Historical attrition rate by overtime status",
+    x = "Works overtime",
+    y = "Attrition rate"
+  ) +
+  theme_minimal()
+```
+
+### Discussion
+
+- Which groups have the highest attrition rates?
+- Are these also large employee groups, or only small groups with high rates?
+- What additional data would HR need before designing an intervention?
+- Which variables might reflect a condition HR can improve?
+
+# 3. Prepare training and test data
+
+We remove administrative constants and identifiers because they do not provide
+generalizable employee information. We also exclude `gender` from modeling to
+avoid directly using a protected characteristic in individual risk scores.
+In a real project, protected attributes may still be retained separately for
+fairness auditing.
+
+```{r modeling-data}
+model_data <- attrition_data |>
+  select(
+    -any_of(c(
+      "employee_number", "employee_count", "over18",
+      "standard_hours", "gender"
+    ))
+  )
+
+model_data |>
+  summarise(across(everything(), ~ sum(is.na(.x)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "missing") |>
+  filter(missing > 0)
+```
+
+Attrition is the minority class, so we use a **stratified split** to preserve
+approximately the same class proportions in the training and test sets.
+
+```{r split-data}
+attrition_split <- initial_split(
+  model_data,
+  prop = 0.80,
+  strata = attrition
+)
+
+train_data <- training(attrition_split)
+test_data  <- testing(attrition_split)
+
+bind_rows(
+  train_data |> count(attrition) |> mutate(dataset = "Training"),
+  test_data  |> count(attrition) |> mutate(dataset = "Test")
+) |>
+  group_by(dataset) |>
+  mutate(proportion = percent(n / sum(n), accuracy = 0.1)) |>
+  ungroup()
+```
+
+The test set is kept untouched during model fitting. It represents employees
+whose outcomes were not used to estimate either model.
+
+# 4. Establish a frequency-based baseline
+
+Following the **zero-rule** approach, the baseline predicts the majority class
+(`No`) for every employee. A useful model should provide operational value
+beyond this naive rule.
+
+```{r baseline}
+baseline_predictions <- test_data |>
+  transmute(
+    truth = attrition,
+    .pred_class = factor("No", levels = levels(attrition))
+  )
+
+baseline_accuracy <- accuracy(
+  baseline_predictions,
+  truth = truth,
+  estimate = .pred_class
+)
+
+baseline_accuracy
+```
+
+Accuracy may look high even though this baseline identifies no employees who
+actually leave. This is why recall, precision, F1 score, and the confusion
+matrix are necessary.
+
+# 5. Build a logistic regression model
+
+Logistic regression estimates each employee's probability of attrition. Its
+coefficients can help identify associations after controlling for the other
+included variables.
+
+```{r logistic-model}
+logistic_model <- glm(
+  attrition ~ ., 
+  data = train_data,
+  family = binomial(link = "logit")
+)
+
+summary(logistic_model)
+```
+
+Odds ratios are easier to interpret than raw log-odds coefficients. Values
+above 1 are associated with higher odds of attrition; values below 1 are
+associated with lower odds, holding the other included predictors constant.
+
+```{r logistic-odds-ratios}
+logistic_odds_ratios <- tidy(
+  logistic_model,
+  conf.int = TRUE,
+  exponentiate = TRUE
+) |>
+  filter(term != "(Intercept)") |>
+  arrange(desc(abs(log(estimate))))
+
+logistic_odds_ratios |>
+  select(term, odds_ratio = estimate, conf.low, conf.high, p.value) |>
+  slice_head(n = 15)
+```
+
+```{r logistic-predictions}
+logistic_predictions <- test_data |>
+  transmute(
+    truth = attrition,
+    .pred_yes = predict(
+      logistic_model,
+      newdata = test_data,
+      type = "response"
+    ),
+    .pred_no = 1 - .pred_yes,
+    .pred_class = factor(
+      if_else(.pred_yes >= 0.50, "Yes", "No"),
+      levels = c("No", "Yes")
+    )
+  )
+```
+
+# 6. Build a decision tree model
+
+A decision tree creates a hierarchy of rules. Its main operational advantage is
+that HR stakeholders can inspect the sequence of conditions leading to a
+classification.
+
+We set `cp` below its final value first, then use cross-validation error to
+select and prune the tree.
+
+```{r decision-tree-model}
+tree_full <- rpart(
+  attrition ~ ., 
+  data = train_data,
+  method = "class",
+  parms = list(split = "information"),
+  control = rpart.control(cp = 0.001, minsplit = 20, xval = 10)
+)
+
+printcp(tree_full)
+
+best_cp <- tree_full$cptable[
+  which.min(tree_full$cptable[, "xerror"]),
+  "CP"
+]
+
+decision_tree <- prune(tree_full, cp = best_cp)
+```
+
+```{r plot-tree, fig.height=7}
+rpart.plot(
+  decision_tree,
+  type = 2,
+  extra = 104,
+  fallen.leaves = TRUE,
+  box.palette = c("#4C78A8", "#E45756"),
+  shadow.col = "gray",
+  nn = TRUE
+)
+```
+
+```{r tree-importance}
+tree_importance <- enframe(
+  decision_tree$variable.importance,
+  name = "variable",
+  value = "importance"
+) |>
+  mutate(importance = importance / sum(importance)) |>
+  arrange(desc(importance))
+
+tree_importance
+```
+
+Variable importance identifies variables useful for splitting the historical
+records. It does not prove that changing a variable will cause attrition to
+decrease.
+
+```{r tree-predictions}
+tree_probabilities <- predict(
+  decision_tree,
+  newdata = test_data,
+  type = "prob"
+)
+
+tree_predictions <- test_data |>
+  transmute(
+    truth = attrition,
+    .pred_no = tree_probabilities[, "No"],
+    .pred_yes = tree_probabilities[, "Yes"],
+    .pred_class = factor(
+      if_else(.pred_yes >= 0.50, "Yes", "No"),
+      levels = c("No", "Yes")
+    )
+  )
+```
+
+# 7. Evaluate both models
+
+For this retention use case, `Yes` is the event of interest. A false negative
+is an employee who actually leaves but whom the model labels as likely to stay.
+If early support is the objective, these missed cases may be more costly than
+false positives.
+
+```{r metric-function}
+classification_metrics <- function(predictions, model_name) {
+  bind_rows(
+    accuracy(predictions, truth, .pred_class),
+    precision(predictions, truth, .pred_class, event_level = "second"),
+    recall(predictions, truth, .pred_class, event_level = "second"),
+    f_meas(predictions, truth, .pred_class, event_level = "second"),
+    roc_auc(predictions, truth, .pred_yes, event_level = "second")
+  ) |>
+    mutate(model = model_name, .before = 1)
+}
+
+model_metrics <- bind_rows(
+  classification_metrics(logistic_predictions, "Logistic regression"),
+  classification_metrics(tree_predictions, "Decision tree")
+)
+
+model_metrics |>
+  select(model, metric = .metric, estimate = .estimate) |>
+  pivot_wider(names_from = metric, values_from = estimate) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+```
+
+## Confusion matrices
+
+```{r logistic-confusion}
+conf_mat(
+  logistic_predictions,
+  truth = truth,
+  estimate = .pred_class
+)
+```
+
+```{r tree-confusion}
+conf_mat(
+  tree_predictions,
+  truth = truth,
+  estimate = .pred_class
+)
+```
+
+```{r operational-errors}
+operational_counts <- function(predictions, model_name) {
+  predictions |>
+    summarise(
+      model = model_name,
+      employees_flagged = sum(.pred_class == "Yes"),
+      correctly_flagged = sum(truth == "Yes" & .pred_class == "Yes"),
+      unnecessary_reviews = sum(truth == "No" & .pred_class == "Yes"),
+      missed_attrition_cases = sum(truth == "Yes" & .pred_class == "No")
+    )
+}
+
+bind_rows(
+  operational_counts(logistic_predictions, "Logistic regression"),
+  operational_counts(tree_predictions, "Decision tree")
+)
+```
+
+## ROC curves
+
+```{r roc-curves}
+bind_rows(
+  logistic_predictions |> mutate(model = "Logistic regression"),
+  tree_predictions |> mutate(model = "Decision tree")
+) |>
+  group_by(model) |>
+  roc_curve(truth, .pred_yes, event_level = "second") |>
+  autoplot() +
+  geom_abline(linetype = "dashed", color = "gray50") +
+  labs(
+    title = "ROC curves on the test set",
+    subtitle = "Performance across all possible classification thresholds",
+    x = "False-positive rate",
+    y = "True-positive rate",
+    color = "Model"
+  ) +
+  theme_minimal()
+```
+
+# 8. Connect the threshold to HR capacity
+
+The default threshold of 0.50 is a convention, not an operational requirement.
+Lower thresholds generally flag more employees and improve recall, but they
+also create more false positives and require more HR reviews.
+
+```{r threshold-function}
+threshold_results <- function(predictions, model_name,
+                              thresholds = seq(0.10, 0.70, by = 0.05)) {
+  map_dfr(thresholds, function(cutoff) {
+    scored <- predictions |>
+      mutate(
+        threshold = cutoff,
+        classification = factor(
+          if_else(.pred_yes >= cutoff, "Yes", "No"),
+          levels = c("No", "Yes")
+        )
+      )
+
+    tibble(
+      model = model_name,
+      threshold = cutoff,
+      employees_flagged = sum(scored$classification == "Yes"),
+      recall = sens_vec(
+        scored$truth,
+        scored$classification,
+        event_level = "second"
+      ),
+      precision = precision_vec(
+        scored$truth,
+        scored$classification,
+        event_level = "second"
+      ),
+      missed_attrition_cases = sum(
+        scored$truth == "Yes" & scored$classification == "No"
+      )
+    )
+  })
+}
+
+threshold_comparison <- bind_rows(
+  threshold_results(logistic_predictions, "Logistic regression"),
+  threshold_results(tree_predictions, "Decision tree")
+)
+
+threshold_comparison
+```
+
+```{r threshold-chart}
+threshold_comparison |>
+  ggplot(aes(employees_flagged, recall, color = model)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  labs(
+    title = "Retention-review workload versus recall",
+    subtitle = "Each point represents a different classification threshold",
+    x = "Employees flagged for HR review",
+    y = "Share of actual attrition cases identified",
+    color = "Model"
+  ) +
+  theme_minimal()
+```
+
+Suppose HR can review at most 20% of employees in the test population. The next
+table finds the feasible threshold with the highest recall for each model.
+
+```{r capacity-based-selection}
+review_capacity <- ceiling(0.20 * nrow(test_data))
+
+recommended_thresholds <- threshold_comparison |>
+  filter(employees_flagged <= review_capacity) |>
+  group_by(model) |>
+  slice_max(recall, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  arrange(desc(recall), desc(precision))
+
+tibble(review_capacity = review_capacity)
+recommended_thresholds
+```
+
+An alternative production process is to rank employees by predicted
+probability and review the top `r review_capacity` employees. This directly
+matches workload to available capacity and avoids assuming that 0.50 is the
+right cutoff.
+
+```{r top-risk-review-list}
+best_model_name <- recommended_thresholds$model[[1]]
+
+selected_predictions <- if (best_model_name == "Logistic regression") {
+  logistic_predictions
+} else {
+  tree_predictions
+}
+
+review_list_summary <- selected_predictions |>
+  mutate(test_row = row_number()) |>
+  slice_max(.pred_yes, n = review_capacity, with_ties = FALSE) |>
+  summarise(
+    selected_model = best_model_name,
+    employees_for_review = n(),
+    actual_attrition_cases_captured = sum(truth == "Yes"),
+    precision_within_review_list = mean(truth == "Yes")
+  )
+
+review_list_summary
+```
+
+For privacy, the lab reports an aggregate summary rather than displaying an
+employee-level watchlist.
+
+# 9. Operational interpretation
+
+Use the evidence generated above to answer these questions:
+
+1. **Scale of the issue:** How many employees and what percentage of the
+   workforce historically left?
+2. **Workforce patterns:** Which roles or working conditions should HR study
+   further? Are the affected groups large enough to prioritize?
+3. **Baseline value:** Why is the majority-class accuracy an inadequate success
+   measure for this use case?
+4. **Model selection:** Which model identifies a larger share of actual
+   attrition cases? Which one creates fewer unnecessary reviews?
+5. **Capacity:** Under the 20% review constraint, which model and threshold
+   should HR pilot?
+6. **Interpretability:** Is the decision tree easier to communicate? Does that
+   compensate for any difference in predictive performance?
+7. **Intervention:** What supportive actions could HR test—for example workload
+   discussions, career-path reviews, manager check-ins, or compensation review?
+8. **Measurement:** How would HR determine whether an intervention actually
+   reduces attrition rather than merely targeting correlated groups?
+
+# 10. Recommended decision framework
+
+The selected model should not automatically determine employment actions. A
+safer operational workflow is:
+
+1. Score eligible employees at an agreed schedule.
+2. Select a threshold or ranked review list based on HR capacity.
+3. Let trained HR personnel review the surrounding context.
+4. Offer supportive, consistently defined interventions.
+5. Track participation, employee feedback, retention outcomes, false alarms,
+   and missed cases.
+6. Monitor performance and fairness across relevant employee groups.
+7. Retrain or retire the model when its data or operating environment changes.
+
+# 11. Key limitations
+
+- The data is synthetic and does not represent a specific organization.
+- Historical associations are not proof of causation.
+- Some relevant factors may be unavailable or poorly measured.
+- A random split estimates generalization to similar records, not necessarily
+  performance in a future workforce. Production validation should use a
+  time-based holdout when dates are available.
+- Using employee data creates privacy, fairness, explainability, and governance
+  obligations.
+- Model performance may change as workforce policies and economic conditions
+  change.
+
+# 12. Optional learner exercises
+
+1. Change the review capacity from 20% to 10% and 30%. How does the recommended
+   threshold change?
+2. Compare the zero-rule baseline with a one-rule classifier based on
+   `over_time`.
+3. Modify the decision tree's `minsplit` or pruning rule. What happens to recall
+   and interpretability?
+4. Add 10-fold cross-validation to compare model stability.
+5. Calculate specificity and balanced accuracy.
+6. Examine model performance across gender groups using a separate audit table,
+   without adding gender to the predictors.
+7. Write a one-page recommendation to HR that distinguishes predictive
+   associations from causal conclusions.
+
+# Reproducibility information
+
+```{r session-info}
+sessionInfo()
+```
