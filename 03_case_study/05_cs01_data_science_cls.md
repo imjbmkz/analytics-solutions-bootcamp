@@ -1,332 +1,348 @@
-# Take-Home Case Study: Home Credit Default Risk
+# Forest Cover Type Prediction
+
+## Take-Home Multiclass Classification Case Study
 
 ## Background
 
-Home Credit is a financial institution that provides loans to people who may
-have limited or no traditional credit history. Because these applicants may not
-have sufficient records from conventional banks, lenders must use other
-available information to assess whether a loan can be repaid.
+Forest managers need reliable information about the vegetation covering large
+areas of land. Field surveys can provide accurate observations, but inspecting
+every location is expensive and time-consuming. Cartographic measurements such
+as elevation, slope, distance to water, soil type, and wilderness area may help
+identify the most likely forest cover type of an unmapped location.
 
-Home Credit wants to improve its credit-risk assessment process. The company
-needs a classification model that estimates the probability that an applicant
-will experience difficulty repaying a loan. The prediction should help credit
-teams prioritize applications for further review and design appropriate lending
-conditions—not automatically reject applicants.
-
-In this case study, you will build and evaluate a binary-classification solution
-using the **Home Credit Default Risk** dataset. You will also generate
-predictions for the Kaggle test data, submit them to Kaggle, and document your
-score.
+In this case study, you will build a multiclass classification solution using
+the Kaggle **Forest Cover Type Prediction** dataset. You will predict one of
+seven forest cover types for each observation, submit your predictions to
+Kaggle, and document your score.
 
 Competition page:
-[Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk)
+[Forest Cover Type Prediction](https://www.kaggle.com/competitions/forest-cover-type-prediction)
 
-## Business problem
+## Problem statement
 
-Home Credit needs to answer the following main question:
+The main research question is:
 
-> How can available application and credit-history data be used to estimate an
-> applicant's probability of repayment difficulty while supporting responsible
-> and explainable lending decisions?
+> Can cartographic characteristics be used to accurately classify the dominant
+> forest cover type of a land area?
 
-The `TARGET` variable is the classification outcome:
+The target variable is `Cover_Type`, with seven possible classes:
 
-- `TARGET = 1`: The applicant experienced repayment difficulty.
-- `TARGET = 0`: The applicant did not experience repayment difficulty.
+| Class | Forest cover type |
+|---:|---|
+| 1 | Spruce/Fir |
+| 2 | Lodgepole Pine |
+| 3 | Ponderosa Pine |
+| 4 | Cottonwood/Willow |
+| 5 | Aspen |
+| 6 | Douglas-fir |
+| 7 | Krummholz |
 
-This is an imbalanced classification problem. Accuracy alone must not be used
-to determine whether a model performs well.
+This is a **multiclass classification** problem. Each observation must be
+assigned exactly one class from `1` to `7`.
 
-## Case-study objectives
+## Objectives
 
-Your team must:
+You must:
 
-1. Understand the business problem and the relationships among the supplied
-   datasets.
-2. Assess data quality, missingness, class imbalance, and unusual values.
-3. Prepare applicant and credit-history data for machine learning.
-4. Engineer useful and defensible applicant-level features.
-5. Establish a simple baseline model.
-6. Train and compare at least two classification models.
-7. Evaluate the models using appropriate validation procedures and metrics.
-8. Interpret the selected model and its most influential features.
-9. Generate repayment-difficulty probabilities for `application_test.csv`.
-10. Submit the predictions to Kaggle and document the resulting score.
-11. Explain how the solution should—and should not—be used in lending
-    operations.
+1. Understand the environmental variables and classification target.
+2. Assess data quality, class distribution, and unusual observations.
+3. Explore how terrain, hydrology, soil, and wilderness characteristics differ
+   across cover types.
+4. Prepare numerical and binary variables for modeling.
+5. Establish a zero-rule baseline.
+6. Train and compare at least two multiclass classification models.
+7. Evaluate overall and class-level performance.
+8. Analyze which cover types are frequently confused.
+9. Interpret the most influential predictors.
+10. Generate predictions for Kaggle's test data.
+11. Submit the predictions to Kaggle and document the score.
 
 ## Data source
 
 Download the files from the competition's
-[Data page](https://www.kaggle.com/competitions/home-credit-default-risk/data).
+[Data page](https://www.kaggle.com/competitions/forest-cover-type-prediction/data).
 
-The supplied files include:
+The main files are:
 
-| File | Description |
+| File | Purpose |
 |---|---|
-| `application_train.csv` | Current loan applications with the `TARGET` outcome |
-| `application_test.csv` | Applications requiring predicted probabilities |
-| `bureau.csv` | Previous credits reported by other financial institutions |
-| `bureau_balance.csv` | Monthly status of credits recorded in `bureau.csv` |
-| `previous_application.csv` | Previous Home Credit applications |
-| `POS_CASH_balance.csv` | Monthly point-of-sale and cash-loan balances |
-| `credit_card_balance.csv` | Monthly credit-card balances |
-| `installments_payments.csv` | Repayment history for previous credits |
-| `HomeCredit_columns_description.csv` | Dataset and column descriptions |
-| `sample_submission.csv` | Required Kaggle submission structure |
+| `train.csv` | Labeled observations containing `Cover_Type` |
+| `test.csv` | Unlabeled observations requiring predictions |
+| `sampleSubmission.csv` | Required Kaggle submission structure |
 
-The tables are connected using identifiers such as:
+Important groups of variables include:
 
-- `SK_ID_CURR`: current applicant or current application identifier
-- `SK_ID_PREV`: previous Home Credit application identifier
-- `SK_ID_BUREAU`: previous credit identifier from the credit bureau
+### Terrain
 
-## Minimum data requirement
+- `Elevation`
+- `Aspect`
+- `Slope`
+- `Hillshade_9am`
+- `Hillshade_Noon`
+- `Hillshade_3pm`
 
-You must use:
+### Distance measurements
 
-1. `application_train.csv` and `application_test.csv`; and
-2. at least **one supplementary credit-history table**.
+- `Horizontal_Distance_To_Hydrology`
+- `Vertical_Distance_To_Hydrology`
+- `Horizontal_Distance_To_Roadways`
+- `Horizontal_Distance_To_Fire_Points`
 
-Using only the application tables does not satisfy the minimum requirement.
+### Categorical indicators
 
-Supplementary tables contain multiple records for one applicant. Before joining
-them to the application data, aggregate them to one row per `SK_ID_CURR`.
-Careless joins may duplicate applicants and invalidate the model.
+- `Wilderness_Area1` to `Wilderness_Area4`
+- `Soil_Type1` to `Soil_Type40`
 
-## Business questions
+The wilderness and soil columns are already represented as binary indicator
+variables.
+
+## Research questions
 
 Your analysis must answer the following questions.
 
-### Applicant and portfolio profile
+### Data and class profile
 
-1. What proportion of training applicants experienced repayment difficulty?
-2. Which applicant characteristics are associated with higher or lower observed
-   repayment-difficulty rates?
-3. How do income, requested credit, annuity, employment history, age, and family
-   characteristics vary across the two target classes?
-4. Which variables have substantial missing data, and what might the missingness
-   mean operationally?
+1. How many observations and predictors are available?
+2. How is `Cover_Type` distributed in the training data?
+3. Are there missing, duplicated, impossible, or unusual values?
+4. Do the training and test datasets have similar predictor distributions?
 
-### Credit-history behavior
+### Environmental relationships
 
-5. What does the selected supplementary table reveal about an applicant's prior
-   credit or repayment behavior?
-6. Which applicant-level aggregates can be constructed from the selected
-   history table?
-7. Do the engineered credit-history features improve validation performance?
+5. How does elevation vary across forest cover types?
+6. How do slope and aspect differ among the seven classes?
+7. Are some cover types more common near water, roads, or fire points?
+8. Which wilderness areas are associated with particular cover types?
+9. Which soil types appear most informative?
+10. Which numerical predictors are strongly correlated?
 
 ### Model performance
 
-8. How well does a simple baseline perform?
-9. Which candidate model provides the strongest validation ROC AUC?
-10. How do the models compare in identifying applicants with repayment
-    difficulty?
-11. What types of errors does the selected model make?
-12. Does model performance differ across important applicant groups?
-
-### Operational use
-
-13. How could predicted probabilities support application review?
-14. What risks would arise if the model were used as an automatic loan-rejection
-    system?
-15. What additional policies, human reviews, and monitoring controls would be
-    required before deployment?
+11. How well does the zero-rule baseline perform?
+12. Which model produces the highest validation accuracy?
+13. Which model produces the strongest macro F1 score?
+14. Which cover types are easiest and hardest to identify?
+15. Which pairs of cover types are most frequently confused?
+16. Does scaling materially affect a distance-based model?
+17. Which environmental variables contribute most to the selected model?
 
 ## Required procedures
 
-### 1. Understand the tables
+### 1. Understand the dataset
 
-- Identify the grain of every table used.
-- Identify primary and joining keys.
-- Show the relationship between the selected tables.
-- Verify that the final modeling table has only one row per `SK_ID_CURR`.
+- Identify the grain of each row.
+- Confirm that `Id` uniquely identifies every observation.
+- Confirm that `Cover_Type` contains seven classes.
+- Compare the schemas of `train.csv` and `test.csv`.
+- Exclude `Id` from the model predictors.
 
 ### 2. Assess data quality
 
 At minimum, investigate:
 
-- Number of rows and columns
+- Row and column counts
 - Data types
-- Duplicate records and duplicate identifiers
+- Duplicate rows and identifiers
 - Missing values
 - Constant and near-constant variables
-- Unusual or undocumented values
-- Implausible values and sentinel values
-- Class distribution of `TARGET`
-- Differences between training and test data
+- Values outside reasonable variable ranges
+- Invalid one-hot-encoded wilderness or soil groups
+- Class frequencies
+- Differences between training and test distributions
 
-Document how each material issue was treated. Do not remove observations or
-variables without explaining the decision.
+For one-hot-encoded groups, confirm whether every row has exactly one active
+wilderness area and exactly one active soil type. Document any exceptions and
+how they are treated.
 
 ### 3. Perform exploratory analysis
 
-Explore the relationship between `TARGET` and relevant variables. Your report
-must contain readable visualizations and interpretations, not only code output.
+Your report must contain readable visualizations and written interpretations.
+Suggested analyses include:
 
-Suggested areas include:
+- Class distribution of `Cover_Type`
+- Elevation distribution by cover type
+- Slope and aspect by cover type
+- Hydrology, roadway, and fire-point distances by cover type
+- Cover type by wilderness area
+- Most common soil types per class
+- Correlation matrix for continuous predictors
+- Two-dimensional visualization using PCA as an optional extension
 
-- Income and requested credit
-- Credit-to-income and annuity-to-income relationships
-- Age and employment history
-- Contract and income type
-- Housing and family characteristics
-- External credit scores
-- Prior loans, overdue accounts, balances, or payment behavior
+Do not limit the analysis to plots. Explain what the findings imply for
+classification.
 
-Remember that association does not establish causation.
+### 4. Prepare and engineer features
 
-### 4. Engineer features
+Potential feature-engineering ideas include:
 
-Create features that have a clear analytical or lending rationale. Possible
-examples include:
+- Combined horizontal and vertical hydrology distance
+- Average hillshade
+- Difference between morning and afternoon hillshade
+- Minimum distance to a roadway, water source, or fire point
+- Trigonometric transformation of `Aspect`
+- Reconstructed wilderness-area category
+- Reconstructed soil-type category
 
-- Credit-to-income ratio
-- Annuity-to-income ratio
-- Credit-to-annuity ratio
-- Applicant age in years
-- Employment length in years
-- Number of previous credits or applications
-- Number or proportion of active credits
-- Average or maximum days overdue
-- Total outstanding balance
-- Payment-to-installment ratio
-- Proportion of late payments
-
-The appropriate features depend on the supplementary table selected. Prevent
-target leakage: do not use information that would be unavailable when the
-lending decision is made.
+Explain the rationale for every engineered feature. Apply learned
+transformations using training data only.
 
 ### 5. Create a validation strategy
 
-- Separate predictors from the target and identifier.
+- Separate predictors, target, and `Id`.
 - Create a stratified training-validation split or stratified cross-validation.
-- Apply preprocessing using training data only.
-- Ensure that imputation, encoding, scaling, and feature selection do not learn
-  from validation or Kaggle test data.
+- Preserve the class distribution across folds.
+- Fit preprocessing steps using training folds only.
+- Use the same validation observations for fair model comparison.
 - Set and report random seeds where applicable.
 
-Explain why the validation design is appropriate.
+The Kaggle test data must not be used to tune the models.
 
 ### 6. Establish a baseline
 
-Build at least one simple baseline, such as:
+Create a zero-rule classifier that always predicts the most frequent training
+class. Report its validation accuracy and macro F1 score.
 
-- A constant probability based on the training repayment-difficulty rate; or
-- A simple logistic-regression model using a limited number of predictors.
-
-The more complex models must be compared against this baseline.
+The candidate models must improve meaningfully on this baseline.
 
 ### 7. Train candidate models
 
-Train and compare at least **two classification models**, excluding the constant
-baseline.
+Train and compare at least **two multiclass classification models**, excluding
+the baseline.
 
-At least one model must be interpretable. Suggested models include:
+Required:
 
-- Logistic regression
-- Regularized logistic regression
-- Decision tree
-- Random forest
-- Gradient-boosted trees
+1. A decision tree
+2. One additional model, such as:
+   - K-nearest neighbors
+   - Random forest
+   - Multinomial logistic regression
+   - Gradient-boosted trees
 
-Hyperparameter tuning is encouraged, but it must be performed using only the
-training and validation process. Do not tune repeatedly against the Kaggle
-public leaderboard.
+If K-nearest neighbors or multinomial logistic regression is used, scale the
+continuous predictors and explain why scaling is necessary.
+
+Hyperparameter tuning should be performed through the validation process—not by
+repeatedly checking the Kaggle public leaderboard.
 
 ### 8. Evaluate the models
 
-The primary metric is **ROC AUC**, which is also used by the Kaggle competition.
-See Kaggle's [Evaluation page](https://www.kaggle.com/competitions/home-credit-default-risk/overview/evaluation).
+Kaggle evaluates submissions using **multiclass accuracy**:
+
+\[
+\text{Accuracy} =
+\frac{\text{Number of correct predictions}}
+{\text{Total number of predictions}}
+\]
 
 Also report:
 
-- Confusion matrix at a stated threshold
-- Recall or sensitivity
-- Specificity
-- Precision
-- F1 score
-- Precision-recall AUC, if available
+- Confusion matrix
+- Macro precision
+- Macro recall
+- Macro F1 score
+- Precision, recall, and F1 for every class
 
-Discuss why accuracy is insufficient for this dataset. Explain the business
-meaning of false positives and false negatives.
+Accuracy alone can hide poor results for particular cover types. Use the
+class-level results and confusion matrix to investigate model weaknesses.
 
-### 9. Interpret the selected model
+### 9. Analyze classification errors
 
-Identify the most influential features using a method appropriate to the model,
-such as:
+Create a validation table containing:
 
-- Logistic-regression coefficients or odds ratios
+- Observation identifier
+- Actual cover type
+- Predicted cover type
+- Whether the prediction was correct
+- Predicted class probabilities, when available
+
+Use this table to answer:
+
+- Which class pairs are most frequently confused?
+- Do misclassified observations occupy overlapping elevation ranges?
+- Are particular soil or wilderness categories associated with errors?
+- Are incorrect predictions concentrated near model decision boundaries?
+
+Kaggle does not provide the hidden test labels, so individual Kaggle test errors
+cannot be inspected. Error analysis must use the local validation data.
+
+### 10. Interpret the selected model
+
+Use an interpretation method appropriate to the selected model, such as:
+
 - Decision-tree rules
-- Permutation importance
 - Model-specific feature importance
-- SHAP values as an optional extension
+- Permutation importance
+- Multinomial-regression coefficients
+- Partial-dependence plots as an optional extension
 
-Distinguish predictive importance from causal effect. A feature that improves
-prediction is not necessarily a valid reason to deny credit.
+Explain which environmental measurements are most useful for distinguishing
+cover types. Predictive importance does not establish an ecological causal
+relationship.
 
-### 10. Create and submit Kaggle predictions
+### 11. Retrain and generate Kaggle predictions
 
-Use the selected model to predict the probability of `TARGET = 1` for every row
-in `application_test.csv`.
+After selecting the model using local validation:
+
+1. Apply the finalized feature-engineering process to the full training and test
+   datasets.
+2. Fit preprocessing using the full labeled training data.
+3. Retrain the selected model.
+4. Predict one `Cover_Type` from `1` to `7` for every row in `test.csv`.
+5. Restore the corresponding test `Id` values.
+
+### 12. Create and submit the Kaggle file
 
 The submission must contain exactly these columns:
 
 ```text
-SK_ID_CURR,TARGET
+Id,Cover_Type
 ```
 
-`TARGET` must contain probabilities between 0 and 1—not class labels.
-
-Example structure:
+Example:
 
 ```text
-SK_ID_CURR,TARGET
-100001,0.0724
-100005,0.1841
+Id,Cover_Type
+15121,1
+15122,2
+15123,2
 ```
 
 Before submitting, verify that:
 
-- Every Kaggle test applicant appears exactly once.
-- The row count matches `application_test.csv`.
-- `SK_ID_CURR` values and order match the required submission structure.
-- No `TARGET` value is missing.
-- All predictions fall between 0 and 1.
-- The file is saved as CSV.
+- Every test observation appears exactly once.
+- The row count matches `test.csv`.
+- `Id` values and their order match `sampleSubmission.csv`.
+- `Cover_Type` contains integers from `1` to `7` only.
+- There are no missing predictions.
+- The CSV does not contain an extra index column.
 
-Each team must make at least **one valid Kaggle submission**.
+Each team must make at least **one valid Kaggle submission** when late
+submissions remain available.
 
 ## Required outputs
-
-Submit the following files and evidence.
 
 ### 1. Analysis report
 
 Submit a rendered HTML, PDF, or notebook containing:
 
-- Business understanding
-- Dataset and relationship description
+- Problem and dataset understanding
 - Data-quality assessment
 - Exploratory analysis
 - Feature engineering
 - Validation strategy
 - Baseline and candidate models
 - Model evaluation and comparison
-- Error analysis
+- Class-level error analysis
 - Model interpretation
-- Operational recommendations
-- Responsible-lending discussion
-- Limitations
+- Research findings and limitations
 
 ### 2. Reproducible source code
 
 Submit the complete R Markdown, Quarto, Jupyter Notebook, R, or Python source
-used to produce the results.
+used to produce the analysis and predictions.
 
-The code should run in the correct sequence from raw input files to final
-predictions. Do not submit credentials, Kaggle API tokens, passwords, or other
-secrets.
+The code must run in the correct sequence from raw data to the final Kaggle
+submission. Do not include Kaggle API tokens, passwords, or other credentials.
 
 ### 3. Kaggle submission file
 
@@ -339,91 +355,93 @@ Include:
 - Team member or Kaggle username
 - Submission date
 - Submission description
-- Kaggle public ROC AUC score
+- Kaggle public accuracy score
 - Screenshot of the successful submission and score
 - Link to the competition submission page when accessible
 
-The screenshot must clearly display the competition name, submission status,
+The screenshot must display the competition name, successful submission status,
 and public score.
 
-### 5. Short management summary
+If Kaggle no longer accepts late submissions, provide evidence of the platform
+restriction and report the required metrics from local validation. Confirm this
+alternative with the instructor.
 
-Prepare a maximum one-page or five-slide summary covering:
+### 5. Short research summary
 
-- Business problem
-- Most important findings
+Prepare a maximum one-page or five-slide summary containing:
+
+- Research problem
+- Important environmental patterns
 - Selected model and validation performance
 - Kaggle public score
-- Proposed operational use
-- Major limitations and risks
+- Most influential predictors
+- Most frequently confused cover types
+- Main limitations
 
 ## Kaggle score and academic assessment
 
-The Kaggle public score demonstrates that the submission pipeline works and
-allows comparison against a common test set. However, leaderboard performance
-is only one part of the assessment.
+The Kaggle score confirms that the submission pipeline works and evaluates the
+model against hidden labels. It is only one component of the assessment.
 
-Learners will not be rewarded for repeatedly tuning against the public
-leaderboard. Strong submissions should show:
+Strong work should demonstrate:
 
 - A defensible local validation strategy
-- Reproducible data preparation
+- Reproducible and leakage-free preprocessing
 - Meaningful feature engineering
-- Honest comparison of models
-- Clear business interpretation
-- Responsible treatment of applicants
+- Honest comparison against a baseline
+- Class-level evaluation
+- Clear interpretation and communication
 
-The private test labels are not available to learners, and the public
-leaderboard should not replace local validation.
+Do not repeatedly tune against the public leaderboard. Select the final model
+primarily through local validation.
 
 ## Suggested scoring rubric
 
 | Criterion | Weight |
 |---|---:|
-| Business understanding and problem framing | 10% |
-| Data understanding, joins, and data quality | 15% |
-| Exploratory analysis and feature engineering | 20% |
-| Validation design and leakage prevention | 15% |
-| Modeling and evaluation | 20% |
+| Problem framing and research questions | 10% |
+| Data understanding and data quality | 10% |
+| Exploratory analysis | 15% |
+| Feature engineering and preprocessing | 15% |
+| Validation design | 10% |
+| Modeling and model comparison | 15% |
+| Class-level evaluation and error analysis | 10% |
 | Kaggle submission and score evidence | 10% |
-| Interpretation, responsible lending, and communication | 10% |
+| Interpretation, limitations, and communication | 5% |
 | **Total** | **100%** |
 
-The Kaggle component should assess successful submission, appropriate file
-construction, and thoughtful comparison between the Kaggle score and local
-validation—not simply reward the highest score.
+The Kaggle component assesses successful submission, correct file construction,
+and comparison of the public score with local validation—not simply the highest
+leaderboard position.
 
 ## Reflection questions
 
 Answer the following in your report:
 
-1. Which data-quality issue had the greatest effect on your modeling workflow?
-2. Which supplementary table did you use, and what new information did it add?
-3. Which engineered feature contributed the most useful information, and why?
-4. How did you prevent data leakage during preprocessing and validation?
-5. Why did you select your final model?
-6. How does its Kaggle public score compare with its local validation ROC AUC?
-7. What might explain a substantial difference between the two scores?
-8. Which model errors create the greatest lending risk?
-9. Which variables require fairness, privacy, or regulatory review?
-10. What additional evidence would be required before using this model in a real
-    credit decision process?
+1. Which environmental variables differ most across cover types?
+2. Which engineered feature was most useful, and why?
+3. How did you ensure a fair comparison between models?
+4. Why did you select your final model?
+5. Which cover types were most frequently confused?
+6. What environmental similarities might explain those errors?
+7. How did the selected model perform relative to the zero-rule baseline?
+8. How does the Kaggle public accuracy compare with local validation accuracy?
+9. What might explain a difference between the two scores?
+10. What additional environmental or geographic data might improve the model?
 
-## Important limitations and responsible-use requirements
+## Limitations
 
-- The data and competition are intended for analytical learning.
-- A high ROC AUC does not prove that a model is fair, lawful, calibrated, or
-  appropriate for deployment.
-- Historical lending data may contain selection bias and past inequities.
-- Removing protected variables does not automatically eliminate discrimination;
-  other variables may act as proxies.
-- Predictions should support qualified human review and applicant assistance,
-  not fully automated adverse decisions.
-- Real lending use requires governance, monitoring, explainability, security,
-  fairness assessment, legal review, and an applicant appeal process.
+- The training sample may not represent all forest environments.
+- Accuracy does not describe performance for every cover type.
+- Cartographic measurements may overlap across ecologically similar classes.
+- Feature importance does not prove that a variable causes a cover type.
+- Environmental conditions and measurement processes may change over time.
+- A production system would require geographic validation, uncertainty
+  reporting, monitoring, and expert ecological review.
 
 ## References
 
-- [Home Credit Default Risk competition](https://www.kaggle.com/competitions/home-credit-default-risk)
-- [Competition data](https://www.kaggle.com/competitions/home-credit-default-risk/data)
-- [Kaggle evaluation and submission requirements](https://www.kaggle.com/competitions/home-credit-default-risk/overview/evaluation)
+- [Forest Cover Type Prediction competition](https://www.kaggle.com/competitions/forest-cover-type-prediction)
+- [Competition data](https://www.kaggle.com/competitions/forest-cover-type-prediction/data)
+- [Competition evaluation](https://www.kaggle.com/competitions/forest-cover-type-prediction/overview/evaluation)
+
