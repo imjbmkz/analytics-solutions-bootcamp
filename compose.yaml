@@ -14,6 +14,60 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./00_setup:/docker-entrypoint-initdb.d # Mounts your local script directory
 
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U db_user -d asb_oltp"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+
+  setup-db:
+    image: python:3.11-slim
+    container_name: setup_db
+    working_dir: /app
+
+    environment:
+      # DuckDB file created inside the mounted project directory
+      DUCKDB_OLTP_CONNECTION: /app/03_duckdb_databases/asb_oltp.duckdb
+      DUCKDB_OLAP_CONNECTION: /app/03_duckdb_databases/asb_olap.duckdb
+
+      # Use the Compose service name—not localhost
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB_OLTP: asb_oltp
+      POSTGRES_DB_OLAP: asb_olap
+      POSTGRES_USER: db_user
+      POSTGRES_PASSWORD: db_password
+
+    volumes:
+      # Requirements.txt file for Python packages 
+      - ./requirements.txt:/app/requirements.txt:ro
+
+      # Map setup_db.py and 00_setup 
+      - ./setup_db.py:/app/setup_db.py
+      - ./00_setup:/app/00_setup
+
+      # DuckDB databases saved on your computer
+      - ./00_setup/03_duckdb_databases:/app/03_duckdb_databases
+
+    command:
+      - sh
+      - -c
+      - |
+        pip install -r /app/requirements.txt &&
+        python setup_db.py
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: "no"
+
   metabase-db:
     image: postgres:16-alpine
     container_name: metabase_db
