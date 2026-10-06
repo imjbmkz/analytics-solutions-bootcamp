@@ -72,7 +72,7 @@ def spark_submit(file_path, parameters=None):
 with DAG(
     dag_id="nyc_yellow_taxi_pipeline",
     description="Monthly Yellow Taxi ingestion: SeaweedFS raw to Iceberg bronze",
-    start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
+    start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
     schedule='@monthly',
     catchup=True,
     max_active_runs=1,

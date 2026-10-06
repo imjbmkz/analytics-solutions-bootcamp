@@ -355,7 +355,7 @@ services:
     volumes:
       - asb_cloudbeaver_workspace:/opt/cloudbeaver/workspace
       # Mount DuckDB files as read-only
-      - ./03_duckdb_databases:/opt/cloudbeaver/duckdb:ro
+      - ./setup/03_duckdb_databases:/opt/cloudbeaver/duckdb:ro
     restart: unless-stopped
     depends_on:
       asb-setup:
