@@ -24,3 +24,4 @@ python src/01_ingest_csv.py
     - `/src/sql/olap/fact_sale.sql`
 2. For orchestration case study, write your Python script on the following file. 
     - `/run_pipe.py`
+3. When everything is done, you may run your script. `python run_pipe.py`
