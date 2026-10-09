@@ -30,11 +30,13 @@ AW_SCHEMA_NAMES = [
     "human_resources",
     "production",
     "purchasing",
+    "kaggle"
 ]
 
 # Kaggle datasets: Note that sometimes Kaggle datasets have multiple files
 KAGGLE_DATASETS = [
-    "yashch05/direct-to-consumer-e-commerce-funnel-dataset"
+    "yashch05/direct-to-consumer-e-commerce-funnel-dataset",
+    "olistbr/brazilian-ecommerce"
 ]
     
 ###############################################################
@@ -163,13 +165,13 @@ if __name__=="__main__":
         for f in tqdm(dataset_files, leave=False):
             cleaned_f = clean_file_name(f.name)
             sql = f"""
-                CREATE OR REPLACE TABLE {cleaned_f} AS 
+                CREATE OR REPLACE TABLE kaggle.{cleaned_f} AS 
                 SELECT * 
                 FROM read_csv('{f.as_posix()}');
             """
 
             # Create tables on DuckDB generic connection
             run_sql(duckdb_conn, sql, pg_alias_attach_success, 
-                    "CREATE OR REPLACE TABLE ", f"CREATE OR REPLACE TABLE {pg_alias}.")
+                    "CREATE OR REPLACE TABLE kaggle.", f"CREATE OR REPLACE TABLE {pg_alias}.kaggle.")
 
     print("Done creating tables for AdventureWorks and Kaggle datasets.")

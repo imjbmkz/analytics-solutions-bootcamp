@@ -11,7 +11,7 @@ You will begin with multiple raw datasets representing different parts of an e-c
 Your solution should demonstrate the following flow:
 
 ```text
-Raw datasets → data preparation → semantic / analytical model → business metrics → dashboard → insights
+data preparation → semantic / analytical model → business metrics → dashboard → insights
 ```
 
 You may use **Power BI**, **Tableau**, or another appropriate business intelligence tool. You may use SQL, Python, R, Power Query, Tableau Prep, or another justified approach for data preparation.
@@ -43,11 +43,7 @@ Your team has been asked to develop an analytics solution that allows management
 
 #### 3.1. Raw datasets
 
-Download the Brazilian E-Commerce Public Dataset by Olist from:
-
-- [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
-
-The dataset contains the following files:
+The [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) contains the following files:
 
 - `olist_customers_dataset.csv`
 - `olist_geolocation_dataset.csv`
@@ -60,6 +56,24 @@ The dataset contains the following files:
 - `product_category_name_translation.csv`
 
 Treat these files as the raw source data for the analytics solution. You are not required to use every dataset. Select the datasets necessary to support your analysis and explain your decisions.
+
+To ingest the data, run the following command. 
+```
+docker compose up -d
+```
+The data will be loaded into the following tables.
+- asb_oltp.kaggle.product_category_name_translation
+- asb_oltp.kaggle.olist_geolocation_dataset
+- asb_oltp.kaggle.olist_order_items_dataset
+- asb_oltp.kaggle.olist_order_payments_dataset
+- asb_oltp.kaggle.olist_customers_dataset
+- asb_oltp.kaggle.olist_products_dataset
+- asb_oltp.kaggle.olist_sellers_dataset
+- asb_oltp.kaggle.olist_orders_dataset
+- asb_oltp.kaggle.olist_order_reviews_dataset
+
+Table relationships are as follows. You may create a semantic table or use this relationship.
+![alt text](00_images/image.png)
 
 #### 3.2. Dataset documentation
 

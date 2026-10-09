@@ -1,67 +1,84 @@
 # Take-Home Case Study: Exploratory Data Analysis
 
 ## Background
-You are a Data Analyst supporting a UK-based online retailer that sells gift items to customers across multiple countries. Management wants to better understand the company's sales performance, product portfolio, customers, and international markets.
+You are a Data Analyst at an automotive consultancy. A client, a car manufacturer planning its next line-up, wants to better understand how vehicle design choices relate to fuel efficiency and performance, and how its potential competitors are positioned.
 
-Using historical transaction data, conduct exploratory data analysis (EDA) and translate your findings into insights that can support business decisions.
+Using historical vehicle specification data, conduct exploratory data analysis (EDA) and translate your findings into insights that can support product-planning decisions.
 
 ## Objectives
 - Assess and understand the available data.
-- Identify important sales, product, customer, and geographic patterns.
-- Detect unusual observations and potential data-quality concerns.
+- Identify important fuel-efficiency, performance, design, and manufacturer patterns.
+- Detect unusual observations and potential data-quality or data-limitation concerns.
 - Use appropriate visualizations and descriptive statistics.
 - Apply statistical tests where appropriate.
 - Communicate actionable business insights and recommendations.
 
 ## Data Source
-Use the **UCI Online Retail** dataset:
+Use the **`mtcars`** dataset, which is built into R:
 
-https://archive.ics.uci.edu/dataset/352/online+retail
+```r
+data(mtcars)
+?mtcars
+```
 
-The transaction-level data includes invoice number, product code and description, quantity, invoice date, unit price, customer ID, and country.
+The data was extracted from the 1974 *Motor Trend* US magazine and covers fuel consumption and 10 aspects of design and performance for 32 automobiles (1973–74 models). Car model names are stored as **row names**, not as a column.
+
+| Variable | Description |
+|---|---|
+| `mpg` | Miles per (US) gallon |
+| `cyl` | Number of cylinders |
+| `disp` | Displacement (cubic inches) |
+| `hp` | Gross horsepower |
+| `drat` | Rear axle ratio |
+| `wt` | Weight (1,000 lbs) |
+| `qsec` | 1/4 mile time (seconds) |
+| `vs` | Engine shape (0 = V-shaped, 1 = straight) |
+| `am` | Transmission (0 = automatic, 1 = manual) |
+| `gear` | Number of forward gears |
+| `carb` | Number of carburetors |
 
 ## Business Questions
 
-### Sales Performance
-1. How is the business performing over time? Identify important trends, patterns, or unusual periods.
-2. Are there periods when sales are consistently stronger or weaker? What might these patterns imply?
-3. What does a typical transaction look like in terms of order value and quantity purchased?
-4. Are there unusually large or small transactions that management should investigate?
+### Fuel Efficiency
+1. What does the distribution of fuel efficiency (`mpg`) look like across the vehicles? What does a typical car look like?
+2. Which vehicles are unusually efficient or inefficient, and what do they have in common?
+3. How is fuel efficiency related to weight, horsepower, and displacement? Which relationships are strongest?
+4. Are there vehicles whose fuel efficiency is surprising given their size or power that management should look at more closely?
 
-### Product Performance
-5. Which products contribute the most revenue, and which contribute the most units sold?
-6. How concentrated are sales among products? Does the business depend heavily on a small number of products?
-7. Which products appear to be underperforming? Define and justify how you measure underperformance.
-8. Are there products with unusual combinations of price, quantity sold, or revenue?
+### Performance and Design
+5. Which vehicles are the most powerful (`hp`) and the quickest (`qsec`)? Are these the same vehicles?
+6. How strong is the trade-off between performance and fuel efficiency? Is it possible to have both?
+7. Which vehicles appear to be underperforming? Define and justify how you measure underperformance (for example, fuel efficiency relative to weight or power).
+8. Are there vehicles with unusual combinations of weight, power, efficiency, or acceleration?
 
-### Customer Analysis
-9. How concentrated is revenue among customers? Is the company dependent on a small group of high-value customers?
-10. Who are the company's most valuable customers? Define customer value using appropriate business measures.
-11. How does purchasing behavior differ between high-value and typical customers?
-12. Are there identifiable groups of customers with substantially different purchasing behaviors?
+### Vehicle Segments
+9. How do vehicles differ across cylinder groups (4, 6, 8)? Are the differences in fuel efficiency statistically and practically meaningful?
+10. Do manual and automatic vehicles differ in fuel efficiency? Is the difference explained by other factors such as weight or engine size?
+11. How do V-shaped and straight engines differ in efficiency and performance?
+12. Are there identifiable groups of vehicles with substantially different design and performance profiles (for example, using clustering or principal component analysis)?
 
-### Geographic Performance
-13. Which countries or markets contribute the most to the company's business?
-14. How does purchasing behavior differ across the company's major markets?
-15. Are there markets that appear particularly promising or concerning? Support your conclusion with evidence.
+### Manufacturer and Origin
+13. Derive the manufacturer (brand) and region of origin (e.g., US, Europe, Japan) from the car names. Which brands and regions are represented, and how evenly?
+14. How do vehicle specifications differ across regions of origin?
+15. Are there regions or brands whose positioning appears particularly strong or weak for a fuel-conscious market? Support your conclusion with evidence.
 
-### Cancellations and Data Issues
-16. How significant are cancelled transactions? Investigate their frequency and potential financial impact.
-17. Are cancellations concentrated among particular products, customers, markets, or periods?
-18. What unusual patterns or potential data-quality issues could affect management's interpretation?
+### Data Issues and Limitations
+16. How are categorical attributes (`cyl`, `vs`, `am`, `gear`, `carb`) encoded, and how should they be treated in analysis?
+17. How strongly are the design variables correlated with each other, and how does this affect interpretation of any single variable's relationship with `mpg`?
+18. What limitations (sample size, age of the data, how the vehicles were selected, units of measure, influential observations) could affect management's interpretation?
 
 ### Management Summary
 19. What are the **three most important findings** management should know?
-20. What **three actions** would you recommend management consider? Connect each recommendation to evidence from your analysis.
+20. What **three actions** would you recommend management consider for its next vehicle line-up? Connect each recommendation to evidence from your analysis.
 
 ## Analysis Requirements
 At minimum:
 - Perform data inspection and profiling.
-- Investigate missing, invalid, duplicate, or unusual observations.
+- Investigate missing, invalid, duplicate, miscoded, or unusual observations.
 - Use appropriate univariate, bivariate, and multivariate analysis.
 - Provide meaningful visualizations.
 - Calculate appropriate descriptive statistics.
-- Perform statistical tests where they add value.
+- Perform statistical tests where they add value, and check whether their assumptions are reasonable given the small sample.
 - Clearly distinguish observations supported by data from assumptions or interpretations.
 
 Do not simply produce charts and statistical outputs. Explain what important results mean in the context of the business.
@@ -74,8 +91,8 @@ The report should contain:
 1. **Data Overview and Preparation**
    - Dataset description
    - Data profiling
-   - Data-quality issues
-   - Cleaning or transformations performed
+   - Data-quality issues and limitations
+   - Cleaning or transformations performed (e.g., moving row names into a column, converting coded variables to factors, deriving brand and origin)
 
 2. **Exploratory Analysis**
    - Analysis addressing the business questions
@@ -98,6 +115,8 @@ The report should contain:
 - There is no single correct approach.
 - Choose methods and visualizations based on the business question.
 - Not every question requires a statistical test.
+- With only 32 observations, a single vehicle can strongly influence results; check for influential points.
 - Statistical significance does not automatically imply business significance.
 - Association or correlation should not be presented as evidence of causation.
-- Document important assumptions made during the analysis.
+- The data reflects 1970s vehicles; be explicit about how far conclusions can be generalized to today's market.
+- Document important assumptions made during the analysis, including how brand and origin were assigned.
