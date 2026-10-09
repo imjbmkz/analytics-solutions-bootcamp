@@ -62,6 +62,10 @@ To ingest the data, run the following command.
 docker compose up -d
 ```
 The data will be loaded into the following tables.
+
+Via PostgreSQL: `localhost` or `0.0.0.0` at port `5432`
+Via DuckDB: `/asb_materials/setup/03_duckdb_databases/asb_oltp.duckdb`
+
 - asb_oltp.kaggle.product_category_name_translation
 - asb_oltp.kaggle.olist_geolocation_dataset
 - asb_oltp.kaggle.olist_order_items_dataset
